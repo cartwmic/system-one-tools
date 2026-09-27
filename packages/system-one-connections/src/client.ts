@@ -1,7 +1,8 @@
 import { createSystemOne, type EvaluateRequest, type EvaluationResult, type Questions, type RequestOptions } from "@system-one-ai/core";
 import { systemOneAdapter } from "@system-one-ai/adapter-system-one";
+import { openRouterAdapter } from "@system-one-ai/adapter-openrouter";
 import { createFetchTransport } from "@system-one-ai/transport-fetch";
-import { validateConnectionCatalog, type ConnectionCatalog } from "./catalog.js";
+import { validateConnectionCatalog, type ConnectionAdapter, type ConnectionCatalog } from "./catalog.js";
 import { ConnectionSelectionError, MissingConnectionKeyError } from "./errors.js";
 
 export interface ConnectionOverrides {
@@ -13,6 +14,7 @@ export interface ConnectionOverrides {
 
 export interface ConnectionSnapshot {
   readonly connectionId: string;
+  readonly adapter?: ConnectionAdapter;
   readonly baseURL: string;
   readonly model: string;
   readonly apiKeyEnv?: string;
@@ -90,6 +92,7 @@ export function resolveConnection(
   const configured = catalog.connections[connectionId]!;
   return Object.freeze({
     connectionId,
+    ...(configured.adapter === undefined ? {} : { adapter: configured.adapter }),
     baseURL: configured.baseURL,
     model: requestedModel ?? configured.model,
     ...(configured.apiKeyEnv === undefined ? {} : { apiKeyEnv: configured.apiKeyEnv }),
@@ -97,7 +100,7 @@ export function resolveConnection(
 }
 
 /**
- * Construct the shared native SDK client. Connection and model overrides affect this client only;
+ * Construct the shared SDK client with the connection's explicit adapter. Overrides affect this client only;
  * API keys are looked up lazily by the configured environment-variable name.
  */
 export function createConnectionClient(
@@ -110,7 +113,7 @@ export function createConnectionClient(
   const sdk = createSystemOne({
     baseURL: connection.baseURL,
     model: connection.model,
-    adapter: systemOneAdapter,
+    adapter: connection.adapter === "openrouter" ? openRouterAdapter : systemOneAdapter,
     transport: createFetchTransport(),
     apiKey: connection.apiKeyEnv === undefined
       ? null

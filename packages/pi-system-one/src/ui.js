@@ -219,14 +219,25 @@ async function manageConnections(ctx) {
   }
 
   const existing = catalog?.connections[id];
-  const baseURL = await ctx.ui.input("Compatible System One base URL", existing?.baseURL ?? "http://127.0.0.1:8317/v1");
+  const adapterChoice = await ctx.ui.select("Decision adapter", existing?.adapter === "openrouter"
+    ? ["OpenRouter Decisions", "System One"]
+    : ["System One", "OpenRouter Decisions"]);
+  if (adapterChoice === undefined) return;
+  const openrouter = adapterChoice === "OpenRouter Decisions";
+  const previous = existing && (existing.adapter ?? "system-one") === (openrouter ? "openrouter" : "system-one")
+    ? existing : undefined;
+  const baseURL = await ctx.ui.input("Compatible System One base URL", previous?.baseURL ?? (openrouter
+    ? "https://openrouter.ai/api/v1" : "http://127.0.0.1:8317/v1"));
   if (baseURL === undefined) return;
-  const model = await ctx.ui.input("Default model ID", existing?.model ?? "system-one-model");
+  const model = await ctx.ui.input("Default model ID", previous?.model ?? (openrouter
+    ? "~typesafe/jev-latest" : "system-one-model"));
   if (model === undefined) return;
-  const apiKeyEnv = await ctx.ui.input("Credential environment-variable name (blank for none)", existing?.apiKeyEnv ?? "");
+  const apiKeyEnv = await ctx.ui.input("Credential environment-variable name (blank for none)", previous?.apiKeyEnv ?? (openrouter
+    ? "OPENROUTER_API_KEY" : ""));
   if (apiKeyEnv === undefined) return;
 
   const connections = { ...(catalog?.connections ?? {}), [id]: {
+    ...(openrouter ? { adapter: "openrouter" } : {}),
     baseURL: baseURL.trim(),
     model: model.trim(),
     ...(apiKeyEnv.trim() ? { apiKeyEnv: apiKeyEnv.trim() } : {}),

@@ -87,7 +87,7 @@ function sendJson(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
-test("the native SDK adapter sends the same questions to direct, OpenRouter-compatible, and local base paths", async () => {
+test("explicit OpenRouter connections use Decisions while legacy connections keep the native route", async () => {
   const seen = [];
   const fixture = await startServer(async (req, res) => {
     seen.push({ url: req.url, authorization: req.headers.authorization, body: await readRequest(req) });
@@ -99,22 +99,28 @@ test("the native SDK adapter sends the same questions to direct, OpenRouter-comp
       default: "direct",
       connections: {
         direct: { baseURL: `${fixture.origin}/v1`, model: "jev-latest", apiKeyEnv: "DIRECT_TEST_KEY" },
-        openrouter: { baseURL: `${fixture.origin}/api/v1`, model: "openrouter/jev", apiKeyEnv: "OPENROUTER_TEST_KEY" },
+        openrouter: { adapter: "openrouter", baseURL: `${fixture.origin}/api/v1`, model: "~typesafe/jev-latest", apiKeyEnv: "OPENROUTER_TEST_KEY" },
+        legacy: { baseURL: `${fixture.origin}/api/v1`, model: "old-model" },
         local: { baseURL: `${fixture.origin}/home-lab/system-one/v1`, model: "local-compatible" },
       },
     });
     const env = { DIRECT_TEST_KEY: syntheticKey, OPENROUTER_TEST_KEY: "openrouter-synthetic-key" };
     const cases = [
       { id: "direct", path: "/v1/systemone", model: "jev-latest", auth: `Bearer ${syntheticKey}` },
-      { id: "openrouter", path: "/api/v1/systemone", model: "openrouter/jev", auth: "Bearer openrouter-synthetic-key" },
+      { id: "openrouter", path: "/api/alpha/decisions", model: "~typesafe/jev-latest", auth: "Bearer openrouter-synthetic-key" },
+      { id: "legacy", path: "/api/v1/systemone", model: "old-model", auth: undefined },
       { id: "local", path: "/home-lab/system-one/v1/systemone", model: "local-compatible", auth: undefined },
     ];
 
     for (const testCase of cases) {
       const { connection, client } = createConnectionClient(catalog, { connectionId: testCase.id }, { env });
       assert.ok(Object.isFrozen(connection));
-      const result = await client.evaluate(request);
+      const call = testCase.id === "openrouter"
+        ? { ...request, providerOptions: { openrouter: { session_id: "scripted-session" } } }
+        : request;
+      const result = await client.evaluate(call);
       assert.equal(connection.connectionId, testCase.id);
+      assert.equal(connection.adapter, testCase.id === "openrouter" ? "openrouter" : undefined);
       assert.equal(result.model, "resolved-by-script");
       assert.equal(result.answers.choice.choice, "yes");
       assert.deepEqual(result.answers.choice.probabilities, { yes: 0.7, no: 0.3 });
@@ -125,7 +131,9 @@ test("the native SDK adapter sends the same questions to direct, OpenRouter-comp
       assert.deepEqual(result.answers.score.legend, { "0": "low", "1": "medium", "2": "high" });
       assert.deepEqual(result.usage, { inputTokens: 37, outputTokens: 12, totalTokens: 49 });
       assert.deepEqual(result.warnings, ["scripted-warning"]);
-      assert.deepEqual(result.providerMetadata, { trace: "fixture-42" });
+      assert.deepEqual(result.providerMetadata, testCase.id === "openrouter"
+        ? { trace: "fixture-42", openrouter: {} }
+        : { trace: "fixture-42" });
       assert.equal(result.response.attempts, 1);
     }
 
@@ -137,6 +145,7 @@ test("the native SDK adapter sends the same questions to direct, OpenRouter-comp
       assert.deepEqual(sent.body, {
         model: testCase.model,
         state: request.state,
+        ...(testCase.id === "openrouter" ? { session_id: "scripted-session" } : {}),
         questions: {
           ...request.questions,
           boolean: { ...request.questions.boolean, type: "noul" },
@@ -380,6 +389,10 @@ test("catalog validation rejects unsafe URL credentials, secret fields, invalid 
   };
   assert.throws(() => validateConnectionCatalog({ ...valid, extra: "not allowed" }), ConnectionCatalogError);
   assert.throws(() => validateConnectionCatalog({ ...valid, version: 2 }), ConnectionCatalogError);
+  assert.throws(() => validateConnectionCatalog({
+    ...valid,
+    connections: { one: { ...valid.connections.one, adapter: "unknown" } },
+  }), ConnectionCatalogError);
   assert.throws(() => validateConnectionCatalog({
     ...valid,
     connections: { one: { baseURL: "https://user:pass@example.test/v1", model: "model" } },

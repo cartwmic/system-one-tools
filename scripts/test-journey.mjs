@@ -310,11 +310,11 @@ try {
     const harness = await loadOwnerExtensions(runtime, project, agentExtensionPath);
     try {
       await invokeSettings(harness.runner, "settings", scriptedUi({
-        selects: ["Manage connections", "Create a connection"],
-        inputs: ["owner", `${decisionOrigin}/shared/v1`, "shared-model", ""],
+        selects: ["Manage connections", "Create a connection", "OpenRouter Decisions"],
+        inputs: ["owner", `${decisionOrigin}/api/v1`, "~typesafe/jev-latest", ""],
       }));
       await invokeSettings(harness.runner, "settings", scriptedUi({
-        selects: ["Manage connections", "Create a connection"],
+        selects: ["Manage connections", "Create a connection", "System One"],
         inputs: ["project", `${decisionOrigin}/project/v1`, "project-model", ""],
       }));
       await invokeSettings(harness.runner, "settings", scriptedUi({
@@ -333,7 +333,8 @@ try {
   const savedCatalog = JSON.parse(await readFile(catalogPath, "utf8"));
   const savedPreferences = JSON.parse(await readFile(preferencesPath, "utf8"));
   assert.equal(savedCatalog.default, "owner", "the actual /so settings flow should save the user-global default");
-  assert.equal(savedCatalog.connections.owner.baseURL, `${decisionOrigin}/shared/v1`);
+  assert.equal(savedCatalog.connections.owner.adapter, "openrouter");
+  assert.equal(savedCatalog.connections.owner.baseURL, `${decisionOrigin}/api/v1`);
   assert.equal(savedCatalog.connections.project.baseURL, `${decisionOrigin}/project/v1`);
   assert.deepEqual(savedPreferences, { version: 1, agentAccess: true, defaultMode: "proactive" });
 
@@ -390,8 +391,8 @@ try {
   assert.equal(cliResult.model, "cross-caller-resolved-model");
   assert.deepEqual(cliResult.answers.release.probabilities, { wait: 0.86, proceed: 0.14 });
   assert.equal(received.length, 1);
-  assert.equal(received[0].path, "/shared/v1/systemone");
-  assert.equal(received[0].body.model, "shared-model");
+  assert.equal(received[0].path, "/api/alpha/decisions");
+  assert.equal(received[0].body.model, "~typesafe/jev-latest");
   assert.deepEqual(received[0].body.state, request.state);
 
   const pi = await runPi(runtime.piBin, agentExtensionPath, piPrompt, childEnv);
@@ -401,8 +402,8 @@ try {
   assert.ok(piProvider.requests[0].body.tools?.some((tool) => tool.function?.name === "system_one"),
     "user-global settings should enable Pi despite the conflicting project-local off setting");
   assert.equal(received.length, 2, "the CLI and Pi should each complete one decision evaluation");
-  assert.deepEqual(received.map((entry) => entry.path), ["/shared/v1/systemone", "/shared/v1/systemone"]);
-  assert.deepEqual(received.map((entry) => entry.body.model), ["shared-model", "shared-model"]);
+  assert.deepEqual(received.map((entry) => entry.path), ["/api/alpha/decisions", "/api/alpha/decisions"]);
+  assert.deepEqual(received.map((entry) => entry.body.model), ["~typesafe/jev-latest", "~typesafe/jev-latest"]);
   assert.match(piPrompt, /required check is failing/i);
   assert.deepEqual(received[1].body.state, { evidence: piPrompt },
     "Pi's decision evidence must come from the actual user prompt, not a scripted-provider fixture");
@@ -411,7 +412,7 @@ try {
   assert.equal(received[0].authorization, undefined);
   assert.equal(received[1].authorization, undefined);
 
-  console.log("PASS cross-caller journey: /so settings saved one user catalog; packaged CLI and real Pi used the same scripted endpoint");
+  console.log("PASS cross-caller journey: /so settings saved OpenRouter Decisions; packaged CLI and real Pi used the same scripted endpoint");
 } finally {
   if (piProvider) await piProvider.close();
   await new Promise((resolve) => {

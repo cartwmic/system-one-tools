@@ -28,7 +28,7 @@ These commands build the checkout and show CLI help. To open the Pi extension fr
 pi --no-session --no-extensions --extension ./packages/pi-system-one/src/index.js
 ```
 
-Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. This checkout ships no service or model list. Before evaluating, obtain a native System One endpoint, a model ID, and any required credential from its operator. The selected SDK [native adapter](https://github.com/ziyu/system-one-sdk/tree/main/packages/adapter-system-one) sends `{model,state,questions}` to `<baseURL>/systemone` and expects typed answers; the [scripted HTTP fixture](packages/system-one-cli/test/cli.test.mjs) shows the request and response shape. A generic chat-completions endpoint cannot serve that route. The local address and model below are illustrative; replace them with the compatible service's values.
+Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. This checkout ships no service or model list. Before evaluating, obtain a compatible endpoint, model ID, and any required credential. Existing connections use the SDK [native adapter](https://github.com/ziyu/system-one-sdk/tree/main/packages/adapter-system-one), which sends `{model,state,questions}` to `<baseURL>/systemone`. An explicit `adapter: "openrouter"` connection uses [OpenRouter Decisions](https://openrouter.ai/blog/insights/what-is-jev/) at `/api/alpha/decisions`. Both return typed answers; the [scripted HTTP fixture](packages/system-one-cli/test/cli.test.mjs) shows the wire shape. A generic chat-completions endpoint cannot serve either route. The local address and model below are illustrative.
 
 ## Usage
 
@@ -43,7 +43,24 @@ JSON
 )
 ```
 
-This example refuses to replace an existing catalog. If you already have one, edit it to add the named connection and choose its default deliberately. The SDK appends `/systemone` to `baseURL`. For a service that needs a key, set `apiKeyEnv` to the **name** of an environment variable and export its value in the caller's environment. The catalog must not contain the key value. [Connection examples](packages/system-one-connections/examples/connections.example.json) show URL shapes, including an OpenRouter-shaped path. The native adapter still requires a compatible `/systemone` route; live OpenRouter compatibility has not been verified.
+This example refuses to replace an existing catalog. If you already have one, edit it to add the named connection and choose its default deliberately. For OpenRouter Decisions, use this catalog as a starting point, or add its connection to your existing catalog. Select it with `--connection openrouter` or `/so use openrouter`:
+
+```json
+{
+  "version": 1,
+  "default": "openrouter",
+  "connections": {
+    "openrouter": {
+      "adapter": "openrouter",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "model": "~typesafe/jev-latest",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    }
+  }
+}
+```
+
+The OpenRouter adapter maps `/api/v1` to `/api/alpha/decisions`. The native adapter appends `/systemone` to its base URL. `apiKeyEnv` stores the **name** of an environment variable; export its value in the caller's environment. The catalog must not contain the key value. [Connection examples](packages/system-one-connections/examples/connections.example.json) show both adapters.
 
 With that local service running, submit one SDK-shaped request:
 
@@ -68,7 +85,7 @@ npm run test:package
 
 `check` builds the three packages and runs offline tests. `test:journey` installs local tarballs in separate CLI and Pi consumers, saves a catalog entry through `/so settings`, then checks that the CLI and a real Pi turn use the same scripted endpoint. `test:tui` drives Pi through `/reload`, `/new`, manual use, and Ctrl+G in an isolated PTY. Inspect its TAP output for a completed test with zero skips. `test:package` checks independent macOS consumers and a Linux Node 20 CLI consumer in Docker; it does not run Pi under Node 20.
 
-All backends in these checks are scripted. They do not establish authenticated behavior with live TypeSafe or OpenRouter, and they do not establish probability calibration for a local model. A live smoke test may incur charges. Repository procedure and proof boundaries for contributors are in [AGENTS.md](AGENTS.md).
+The automated suites use scripted backends. On 2026-09-27, bounded OpenRouter Decisions calls completed through the CLI, isolated Pi `/so ask`, and Pi's `system_one` tool using `openrouter/openai/gpt-4.1-mini`. A scripted Pi model also exercised the tool path against the live decision endpoint. The calls used the Jev latest alias. This is point-in-time evidence. Direct TypeSafe authentication, other model support, and local-model calibration remain unverified. Live smoke tests may incur charges. Repository procedure and proof boundaries for contributors are in [AGENTS.md](AGENTS.md).
 
 ## Troubleshooting
 
@@ -78,7 +95,7 @@ All backends in these checks are scripted. They do not establish authenticated b
 - `TIMEOUT`: the pinned SDK 0.6.0 defaults to a 10-second evaluation deadline. The CLI accepts `--timeout-ms` for slower services. The current Pi tool and `/so ask` do not expose a timeout override; check the service's latency.
 - `NETWORK_ERROR`: the selected service cannot be reached. Start it and check the catalog's host and port.
 - `PROVIDER_REJECTED`: the service returned an HTTP error. Check the stderr status, server logs, route, model, and required credential environment variable.
-- `MALFORMED_RESPONSE`: the endpoint returned data the native adapter could not decode. Compare its JSON `model` and typed `answers` with the [`providerResponse` fixture](packages/system-one-cli/test/cli.test.mjs), then inspect the server logs. The published `@system-one-ai/adapter-system-one` defines the accepted protocol.
+- `MALFORMED_RESPONSE`: the endpoint returned data the selected adapter could not decode. Compare its JSON `model` and typed `answers` with the [`providerResponse` fixture](packages/system-one-cli/test/cli.test.mjs), then inspect the server logs. The published `@system-one-ai/adapter-system-one` and `@system-one-ai/adapter-openrouter` define their respective protocols.
 - `/so` is unknown: Pi has not loaded the extension. From the repository root, start a new session with `pi --no-session --no-extensions --extension ./packages/pi-system-one/src/index.js`, then run `/so status`.
 - `/so status` works and `system_one` is absent: agent access defaults off. Run `/so on` for this session. Project-local Pi settings cannot enable it.
 - `test:tui` skips its selected TUI case: install Python 3 and rerun; the expected result is one test passed with zero skips. Pi must also be installed. The TUI proof uses a PTY, with no tmux-specific coverage.

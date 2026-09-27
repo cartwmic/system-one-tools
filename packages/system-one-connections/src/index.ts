@@ -5,6 +5,7 @@ export {
   validateConnectionCatalog,
   writeConnectionCatalog,
   type Connection,
+  type ConnectionAdapter,
   type ConnectionCatalog,
 } from "./catalog.js";
 export {

@@ -17,8 +17,9 @@ By default, callers read `~/.config/system-one/connections.json`. `XDG_CONFIG_HO
       "apiKeyEnv": "TYPESAFE_API_KEY"
     },
     "openrouter": {
+      "adapter": "openrouter",
       "baseURL": "https://openrouter.ai/api/v1",
-      "model": "your-compatible-model-id",
+      "model": "~typesafe/jev-latest",
       "apiKeyEnv": "OPENROUTER_API_KEY"
     },
     "local": {
@@ -29,7 +30,7 @@ By default, callers read `~/.config/system-one/connections.json`. `XDG_CONFIG_HO
 }
 ```
 
-The native adapter appends `/systemone` to the configured base URL. Use a compatible System One state-plus-questions endpoint; a generic chat-completions endpoint cannot serve that route. The OpenRouter entry above illustrates a URL shape, and live OpenRouter compatibility has not been verified. A connection without `apiKeyEnv` is unauthenticated. `apiKeyEnv` stores only an environment-variable **name**; the key value is resolved from the runtime environment immediately before the request and is never read from or written to the catalog. Unknown fields (including inline credential fields), URLs with embedded credentials, and malformed catalogs are rejected.
+Connections without `adapter` use the native System One adapter and append `/systemone` to their base URL. `adapter: "openrouter"` selects the SDK's OpenRouter Decisions adapter, which maps `/api/v1` to `/api/alpha/decisions`. Adapter selection is explicit; the hostname does not change it. A generic chat-completions endpoint cannot serve these typed-decision routes. A connection without `apiKeyEnv` is unauthenticated. `apiKeyEnv` stores only an environment-variable **name**; the key value is resolved from the runtime environment immediately before the request and is never read from or written to the catalog. Unknown fields (including inline credential fields), URLs with embedded credentials, and malformed catalogs are rejected.
 
 Copy [`examples/connections.example.json`](./examples/connections.example.json) as a starting point and replace model IDs as needed. Set credential variables in the caller's environment; do not put their values in this file.
 
@@ -72,7 +73,7 @@ console.log(connection.connectionId, result.model, result.answers);
 
 `connection` is an immutable snapshot. Editing the catalog later does not redirect an existing client; load it again and construct a new client for the next call. The owner-only `connectionId` and `model` overrides do not change the saved default. Model selection belongs in these overrides, not the SDK-shaped request. Catalogs with no default require an explicit `connectionId`.
 
-The wrapper uses the published `@system-one-ai/core@0.6.0`, native `@system-one-ai/adapter-system-one@0.6.0`, and `@system-one-ai/transport-fetch@0.6.0`. It disables SDK retries at construction and forces `maxRetries: 0` per evaluation. Timeouts and abort signals remain available through the second `evaluate` argument. Provider rejection, transport failure, and malformed answers remain errors; there is no fallback to another connection or model.
+The wrapper uses the published `@system-one-ai/core@0.6.0`, `@system-one-ai/adapter-system-one@0.6.0`, `@system-one-ai/adapter-openrouter@0.6.0`, and `@system-one-ai/transport-fetch@0.6.0`. It disables SDK retries at construction and forces `maxRetries: 0` per evaluation. Timeouts and abort signals remain available through the second `evaluate` argument. Provider rejection, transport failure, and malformed answers remain errors; there is no fallback to another connection or model.
 
 ## Catalog file API
 

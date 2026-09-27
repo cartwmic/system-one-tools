@@ -424,12 +424,16 @@ await test("the registered /so dispatcher owns session controls, direct ask, and
 
       await runSo(harness, "off", scriptedUi());
       await runSo(harness, "settings", scriptedUi({
-        selects: ["Manage connections", "owner"],
+        selects: ["Manage connections", "owner", "System One"],
         inputs: [`${server.origin}/edited/v1`, "edited-model", ""],
       }));
       await runSo(harness, "settings", scriptedUi({
-        selects: ["Manage connections", "Create a connection"],
+        selects: ["Manage connections", "Create a connection", "System One"],
         inputs: ["later", `${server.origin}/later/v1`, "later-model", ""],
+      }));
+      await runSo(harness, "settings", scriptedUi({
+        selects: ["Manage connections", "Create a connection", "OpenRouter Decisions"],
+        inputs: ["openrouter", `${server.origin}/api/v1`, "openrouter-model", "SYSTEM_ONE_OPENROUTER_TEST_KEY"],
       }));
       await runSo(harness, "settings", scriptedUi({
         selects: ["Set catalog default connection", "later"],
@@ -449,6 +453,12 @@ await test("the registered /so dispatcher owns session controls, direct ask, and
         model: "edited-model",
       });
       assert.equal(catalog.connections.later.model, "later-model");
+      assert.deepEqual(catalog.connections.openrouter, {
+        adapter: "openrouter",
+        baseURL: `${server.origin}/api/v1`,
+        model: "openrouter-model",
+        apiKeyEnv: "SYSTEM_ONE_OPENROUTER_TEST_KEY",
+      });
       assert.deepEqual(await loadSystemOnePreferences(process.env), preferences(true, "proactive"));
       assert.equal(await readFile(getCustomGuidancePath(process.env), "utf8"), "Ask one bounded question over supplied evidence.");
       assert.equal(await readFile(getSystemOnePreferencesPath(process.env), "utf8").then((text) => JSON.parse(text).agentAccess), true);
@@ -469,6 +479,30 @@ await test("the registered /so dispatcher owns session controls, direct ask, and
       assert.equal(server.received.length, 4);
       assert.equal(server.received[3].url, "/later/v1/systemone");
       assert.equal(server.received[3].body.model, "later-model");
+
+      const priorKey = process.env.SYSTEM_ONE_OPENROUTER_TEST_KEY;
+      process.env.SYSTEM_ONE_OPENROUTER_TEST_KEY = "pi-openrouter-synthetic-key";
+      try {
+        const openrouterUi = scriptedUi({
+          editors: [JSON.stringify(request), undefined],
+          selects: ["openrouter"],
+          inputs: [""],
+        });
+        await runSo(harness, "ask", openrouterUi);
+        assert.match(openrouterUi.calls.editors[1].prefill, /scripted-resolved-model/);
+        assert.equal(server.received[4].url, "/api/alpha/decisions");
+        assert.equal(server.received[4].authorization, "Bearer pi-openrouter-synthetic-key");
+        assert.equal(server.received[4].body.model, "openrouter-model");
+
+        await runSo(harness, "use openrouter", scriptedUi());
+        const openrouterResult = await agentTool.execute("openrouter", request, undefined, undefined, harness.runner.createContext());
+        assert.equal(openrouterResult.details.connectionId, "openrouter");
+        assert.equal(server.received[5].url, "/api/alpha/decisions");
+        assert.equal(server.received[5].authorization, "Bearer pi-openrouter-synthetic-key");
+      } finally {
+        if (priorKey === undefined) delete process.env.SYSTEM_ONE_OPENROUTER_TEST_KEY;
+        else process.env.SYSTEM_ONE_OPENROUTER_TEST_KEY = priorKey;
+      }
     });
   } finally {
     harness?.runner.invalidate("test finished");
@@ -660,7 +694,7 @@ await test("a real Pi TUI owner journey preserves nondefault controls through /r
       default: "catalog",
       connections: {
         catalog: { baseURL: `${decisionServer.origin}/catalog/v1`, model: "catalog-model" },
-        owner: { baseURL: `${decisionServer.origin}/owner/v1`, model: "owner-model" },
+        owner: { adapter: "openrouter", baseURL: `${decisionServer.origin}/api/v1`, model: "~typesafe/jev-latest" },
       },
     }, join(xdg, "system-one", "connections.json"));
 
@@ -741,9 +775,9 @@ await test("a real Pi TUI owner journey preserves nondefault controls through /r
       : newSessionUserMessage.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
     assert.equal(newSessionUserText, newSessionPrompt);
     assert.equal(decisionServer.received.length, 2, "the TUI agent turn and manual ask should each make one decision request");
-    assert.equal(decisionServer.received[0].url, "/owner/v1/systemone", "the nondefault connection selected before /reload must reach the later agent call");
+    assert.equal(decisionServer.received[0].url, "/api/alpha/decisions", "the OpenRouter connection selected before /reload must reach the later agent call");
     assert.deepEqual(decisionServer.received[0].body.state, { evidence: agentEvidence }, "the agent must submit the evidence from the actual user prompt");
-    assert.equal(decisionServer.received[0].body.model, "owner-model");
+    assert.equal(decisionServer.received[0].body.model, "~typesafe/jev-latest");
     assert.equal(decisionServer.received[1].url, "/catalog/v1/systemone", "after /new, manual ask defaults to the configured connection");
     assert.deepEqual(decisionServer.received[1].body.state, { evidence: "TUI manual evidence" });
     assert.equal(await loadSystemOnePreferences({ HOME: root, PI_CODING_AGENT_DIR: agentDir }).then((value) => value.agentAccess), false);

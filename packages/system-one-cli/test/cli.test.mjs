@@ -182,11 +182,11 @@ test("--help documents the JSON contract and judgment boundary", async t => {
   assert.match(result.stdout, /Usage: system-one/);
   assert.match(result.stdout, /--connection ID/);
   assert.match(result.stdout, /one JSON object to stdout/);
-  assert.match(result.stdout, /Nonempty providerOptions are unsupported/);
+  assert.match(result.stdout, /providerOptions\.openrouter/);
   assert.match(result.stdout, /factual lookup, exact calculations/);
 });
 
-test("stdin and --file run the same questions over direct, OpenRouter-compatible, and local routes", async t => {
+test("stdin and --file run the same questions over native, OpenRouter Decisions, and local routes", async t => {
   const server = await startServer(async (_req, res, entry) => sendJson(res, 200, {
     ...providerResponse,
     providerMetadata: {
@@ -201,14 +201,14 @@ test("stdin and --file run the same questions over direct, OpenRouter-compatible
     default: "typesafe",
     connections: {
       typesafe: { baseURL: `${server.origin}/v1`, model: "jev-latest", apiKeyEnv: "SYSTEM_ONE_CLI_TEST_KEY" },
-      openrouter: { baseURL: `${server.origin}/api/v1`, model: "openrouter/compatible", apiKeyEnv: "SYSTEM_ONE_CLI_TEST_KEY" },
+      openrouter: { adapter: "openrouter", baseURL: `${server.origin}/api/v1`, model: "~typesafe/jev-latest", apiKeyEnv: "SYSTEM_ONE_CLI_TEST_KEY" },
       local: { baseURL: `${server.origin}/home-lab/v1`, model: "local-compatible" },
     },
   });
 
   const cases = [
     { id: "typesafe", args: ["--model", "one-call-model"], path: "/v1/systemone", model: "one-call-model", auth: `Bearer ${syntheticKey}`, file: false },
-    { id: "openrouter", args: ["--connection", "openrouter"], path: "/api/v1/systemone", model: "openrouter/compatible", auth: `Bearer ${syntheticKey}`, file: false },
+    { id: "openrouter", args: ["--connection", "openrouter"], path: "/api/alpha/decisions", model: "~typesafe/jev-latest", auth: `Bearer ${syntheticKey}`, file: false },
     { id: "local", args: ["--connection", "local"], path: "/home-lab/v1/systemone", model: "local-compatible", auth: undefined, file: true },
   ];
 
@@ -244,6 +244,7 @@ test("stdin and --file run the same questions over direct, OpenRouter-compatible
     assert.deepEqual(output.providerMetadata, {
       trace: "trace-77",
       echoedCredential: testCase.auth === undefined ? "no-credential" : "[REDACTED]",
+      ...(testCase.id === "openrouter" ? { openrouter: {} } : {}),
     });
     assert.equal(output.response.attempts, 1);
   }
@@ -362,6 +363,30 @@ test("the native adapter rejects nonempty providerOptions before HTTP", async t 
 
   assertFailure(await run(harness, [], JSON.stringify({ ...request, providerOptions: { unsupported: true } })), "UNSUPPORTED_REQUEST");
   assert.equal(server.requests.length, 0);
+});
+
+test("OpenRouter Decisions accepts namespaced options without enabling unsupported options", async t => {
+  const server = await startServer(async (_req, res) => sendJson(res, 200, providerResponse));
+  t.after(() => server.close());
+  const harness = await createHarness(t);
+  await harness.catalog({
+    version: 1,
+    default: "openrouter",
+    connections: { openrouter: { adapter: "openrouter", baseURL: `${server.origin}/api/v1`, model: "~typesafe/jev-latest" } },
+  });
+
+  const result = await run(harness, [], JSON.stringify({
+    ...request,
+    providerOptions: { openrouter: { session_id: "cli-session", user: "scripted-user" } },
+  }));
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).connectionId, "openrouter");
+  assert.equal(server.requests[0].path, "/api/alpha/decisions");
+  assert.equal(server.requests[0].body.session_id, "cli-session");
+  assert.equal(server.requests[0].body.user, "scripted-user");
+
+  assertFailure(await run(harness, [], JSON.stringify({ ...request, providerOptions: { unsupported: true } })), "UNSUPPORTED_REQUEST");
+  assert.equal(server.requests.length, 1);
 });
 
 test("bad JSON, model-in-body, and incomplete requests return sanitized JSON failures", async t => {

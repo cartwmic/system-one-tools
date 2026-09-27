@@ -25,7 +25,7 @@ Use System One for an atomic judgment, not factual retrieval, exact calculations
 
 `/so ask` opens Pi's editor with an SDK-shaped JSON request containing `state` and named `questions`. It then offers an owner-selected connection and optional model override for this call only. The result appears in a terminal-only editor; neither request nor result is added to agent context. Manual evaluation works while agent access is off. Backend, credential, JSON, selection, and protocol failures are shown as errors, not results.
 
-`/so settings` can create or edit named connections, choose the catalog default, and save persistent user-global agent-access and prompting-mode preferences. Changes affect later calls/turns; active session overrides remain session-only. Custom guidance has a separate edit action. It uses Pi's editor, so **Ctrl+G** opens the configured external editor. Custom guidance changes usage direction only; the fixed evidence, data, and action boundaries remain in force. This extension does not patch Pi's built-in `/settings`.
+`/so settings` can create or edit named connections (native System One or OpenRouter Decisions), choose the catalog default, and save persistent user-global agent-access and prompting-mode preferences. Changes affect later calls/turns; active session overrides remain session-only. Custom guidance has a separate edit action. It uses Pi's editor, so **Ctrl+G** opens the configured external editor. Custom guidance changes usage direction only; the fixed evidence, data, and action boundaries remain in force. This extension does not patch Pi's built-in `/settings`.
 
 ## Preferences and custom guidance
 
@@ -41,7 +41,7 @@ The user-global preferences file is `<PI_CODING_AGENT_DIR>/system-one/preference
 
 Supported modes are **Explicit** (only when the user names System One), **Selective** (default; use for useful bounded intermediate judgments), **Proactive** (consider more eligible judgments), and **Custom** (owner usage guidance replaces preset usage direction). Fixed exclusions remain in force for every mode. Custom text is stored separately at `<PI_CODING_AGENT_DIR>/system-one/custom-guidance.md`. Missing, empty, or unreadable Custom guidance blocks agent calls with a clear error but does not block manual calls.
 
-Connections are stored in the shared catalog at `${XDG_CONFIG_HOME:-~/.config}/system-one/connections.json`. A connection stores a compatible base URL, model, and optional environment-variable **name** for a runtime credential. Credential values are never requested or stored. See [`@cartwmic/system-one-connections`](../system-one-connections/README.md) for the catalog format.
+Connections are stored in the shared catalog at `${XDG_CONFIG_HOME:-~/.config}/system-one/connections.json`. A connection stores an explicit adapter choice when using OpenRouter, a compatible base URL, model, and optional environment-variable **name** for a runtime credential. Credential values are never requested or stored. See [`@cartwmic/system-one-connections`](../system-one-connections/README.md) for the catalog format.
 
 ## Internal session API
 

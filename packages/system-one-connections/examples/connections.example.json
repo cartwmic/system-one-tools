@@ -8,8 +8,9 @@
       "apiKeyEnv": "TYPESAFE_API_KEY"
     },
     "openrouter": {
+      "adapter": "openrouter",
       "baseURL": "https://openrouter.ai/api/v1",
-      "model": "replace-with-a-compatible-model-id",
+      "model": "~typesafe/jev-latest",
       "apiKeyEnv": "OPENROUTER_API_KEY"
     },
     "local": {

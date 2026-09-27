@@ -4,7 +4,11 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { ConnectionCatalogError } from "./errors.js";
 
+export type ConnectionAdapter = "system-one" | "openrouter";
+
 export interface Connection {
+  /** Omitted connections use the native System One adapter. */
+  readonly adapter?: ConnectionAdapter;
   readonly baseURL: string;
   readonly model: string;
   /** Name of the environment variable holding the key; the key itself is never stored. */
@@ -98,8 +102,16 @@ export function validateConnectionCatalog(value: unknown): ConnectionCatalog {
     if (!CONNECTION_ID.test(id)) {
       throw new ConnectionCatalogError("Connection IDs must start with a letter and contain only letters, digits, '_' or '-'.");
     }
-    const entry = record(value, `catalog.connections.${id}`, ["baseURL", "model", "apiKeyEnv"]);
+    const entry = record(value, `catalog.connections.${id}`, ["adapter", "baseURL", "model", "apiKeyEnv"]);
+    let adapter: ConnectionAdapter | undefined;
+    if (entry.adapter !== undefined) {
+      if (entry.adapter !== "system-one" && entry.adapter !== "openrouter") {
+        throw new ConnectionCatalogError(`catalog.connections.${id}.adapter must be system-one or openrouter.`);
+      }
+      adapter = entry.adapter;
+    }
     const connection: Connection = {
+      ...(adapter === undefined ? {} : { adapter }),
       baseURL: baseURL(entry.baseURL, `catalog.connections.${id}.baseURL`),
       model: nonemptyString(entry.model, `catalog.connections.${id}.model`),
       ...(entry.apiKeyEnv === undefined

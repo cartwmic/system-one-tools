@@ -499,7 +499,7 @@ await test("a real Pi agent turn calls the loaded tool and reaches the scripted 
       version: 1,
       default: "owner",
       connections: {
-        owner: { baseURL: `${decisionServer.origin}/owner/v1`, model: "owner-decision-model", apiKeyEnv: "SYSTEM_ONE_PI_DECISION_KEY" },
+        owner: { adapter: "openrouter", baseURL: `${decisionServer.origin}/api/v1`, model: "~typesafe/jev-latest", apiKeyEnv: "SYSTEM_ONE_PI_DECISION_KEY" },
         project: { baseURL: `${decisionServer.origin}/project/v1`, model: "project-decision-model" },
       },
     }, getDefaultCatalogPath(userEnv));
@@ -558,13 +558,13 @@ await test("a real Pi agent turn calls the loaded tool and reaches the scripted 
 
     assert.equal(decisionServer.received.length, 1, "the actual Pi agent tool call should finish through the scripted decision server");
     const decision = decisionServer.received[0];
-    assert.equal(decision.url, "/owner/v1/systemone", "project-local settings must not redirect the owner catalog default");
+    assert.equal(decision.url, "/api/alpha/decisions", "project-local settings must not redirect the owner catalog default");
     assert.equal(decision.authorization, `Bearer ${decisionKey}`);
     const followupMessages = JSON.stringify(piProvider.requests[1].body.messages);
     assert.equal(followupMessages.includes(decisionKey), false, "the agent's next turn must not receive an echoed credential");
     assert.match(followupMessages, /\[REDACTED\]/, "the agent must receive the sanitized decision result");
     assert.deepEqual(Object.keys(decision.body).sort(), ["model", "questions", "state"]);
-    assert.equal(decision.body.model, "owner-decision-model");
+    assert.equal(decision.body.model, "~typesafe/jev-latest");
     assert.deepEqual(decision.body.state, { evidence: "The project note says release is blocked by a failing check." });
     assert.equal("conversation" in decision.body, false);
     assert.equal("history" in decision.body, false);

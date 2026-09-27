@@ -40,8 +40,9 @@ Options:
   -h, --help           Show this help
 
 Request JSON:
-  {"state": ..., "questions": { ... }}
-  Nonempty providerOptions are unsupported by the native adapter.
+  {"state": ..., "questions": { ... }, "providerOptions": { ... }}
+  Nonempty providerOptions require the OpenRouter adapter and must be under
+  providerOptions.openrouter. The native System One adapter rejects them.
   Put model selection in --model.
   Questions use the SDK's Choice, Boolean, and Score shapes.
 

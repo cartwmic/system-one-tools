@@ -42,7 +42,7 @@ A request is one object using the SDK request fields, except that model selectio
 }
 ```
 
-The current native adapter rejects nonempty `providerOptions` with `UNSUPPORTED_REQUEST`; omit that field. Choice, Boolean, and Score questions keep the SDK's public shape; the native adapter handles the wire protocol. The command makes one evaluation attempt and never retries or falls back to another connection or model.
+The native adapter rejects nonempty `providerOptions` with `UNSUPPORTED_REQUEST`. Connections with `adapter: "openrouter"` accept supported options under `providerOptions.openrouter` (for example, `session_id` or `user`); the SDK rejects unsupported fields. Choice, Boolean, and Score questions keep the SDK's public shape; the selected adapter handles the wire protocol. The command makes one evaluation attempt and never retries or falls back to another connection or model.
 
 A successful invocation exits 0 and writes exactly one JSON object followed by a newline to stdout. It returns the normalized SDK result—including the resolved `model`, typed `answers`, any supplied probabilities, confidence, usage, warnings, metadata, and response details—and adds the selected `connectionId` at the top level. The SDK may add empty usage or warning containers and response-attempt metadata even when the provider omits them. The CLI does not invent answer probabilities or confidence.
 
