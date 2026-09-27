@@ -1,0 +1,21 @@
+{
+  "name": "system-one-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workspace for System One connection, CLI, and Pi packages.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @cartwmic/system-one-connections && npm run build --workspace @cartwmic/system-one-cli && npm run build --workspace @cartwmic/pi-system-one",
+    "test": "npm test --workspace @cartwmic/system-one-connections && npm test --workspace @cartwmic/system-one-cli && npm test --workspace @cartwmic/pi-system-one",
+    "check": "npm run build && npm test",
+    "test:journey": "node scripts/test-journey.mjs",
+    "test:tui": "node --test --test-name-pattern=\"a real Pi TUI owner journey\" packages/pi-system-one/test/pi-system-one-ui.test.mjs",
+    "test:package": "node scripts/test-package.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

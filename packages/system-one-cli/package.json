@@ -1,0 +1,26 @@
+{
+  "name": "@cartwmic/system-one-cli",
+  "version": "0.1.0",
+  "description": "Standalone JSON command-line caller for System One decision services.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "system-one": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@cartwmic/system-one-connections": "^0.1.0"
+  }
+}

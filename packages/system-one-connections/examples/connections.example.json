@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "default": "typesafe",
+  "connections": {
+    "typesafe": {
+      "baseURL": "https://api.typesafe.ai/v1",
+      "model": "jev-latest",
+      "apiKeyEnv": "TYPESAFE_API_KEY"
+    },
+    "openrouter": {
+      "baseURL": "https://openrouter.ai/api/v1",
+      "model": "replace-with-a-compatible-model-id",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    },
+    "local": {
+      "baseURL": "http://127.0.0.1:8317/v1",
+      "model": "local-system-one"
+    }
+  }
+}
