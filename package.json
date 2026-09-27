@@ -6,15 +6,19 @@
   "workspaces": [
     "packages/*"
   ],
+  "pi": {
+    "extensions": ["./packages/pi-system-one/src/index.js"]
+  },
   "scripts": {
     "build": "npm run build --workspace @cartwmic/system-one-connections && npm run build --workspace @cartwmic/system-one-cli && npm run build --workspace @cartwmic/pi-system-one",
+    "prepare": "npm run build --workspace @cartwmic/system-one-connections",
     "test": "npm test --workspace @cartwmic/system-one-connections && npm test --workspace @cartwmic/system-one-cli && npm test --workspace @cartwmic/pi-system-one",
     "check": "npm run build && npm test",
     "test:journey": "node scripts/test-journey.mjs",
     "test:tui": "node --test --test-name-pattern=\"a real Pi TUI owner journey\" packages/pi-system-one/test/pi-system-one-ui.test.mjs",
     "test:package": "node scripts/test-package.mjs"
   },
-  "devDependencies": {
+  "dependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.9.3"
   }

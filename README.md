@@ -28,7 +28,13 @@ These commands build the checkout and show CLI help. To open the Pi extension fr
 pi --no-session --no-extensions --extension ./packages/pi-system-one/src/index.js
 ```
 
-Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. This checkout ships no service or model list. Before evaluating, obtain a compatible endpoint, model ID, and any required credential. Existing connections use the SDK [native adapter](https://github.com/ziyu/system-one-sdk/tree/main/packages/adapter-system-one), which sends `{model,state,questions}` to `<baseURL>/systemone`. An explicit `adapter: "openrouter"` connection uses [OpenRouter Decisions](https://openrouter.ai/blog/insights/what-is-jev/) at `/api/alpha/decisions`. Both return typed answers; the [scripted HTTP fixture](packages/system-one-cli/test/cli.test.mjs) shows the wire shape. A generic chat-completions endpoint cannot serve either route. The local address and model below are illustrative.
+Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For a persistent Git installation, use:
+
+```sh
+pi install https://github.com/cartwmic/system-one-tools
+```
+
+Pi clones the repository, builds the shared connection package, and loads the single nested extension declared in the root Pi manifest. The packages are not published to npm. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. This checkout ships no service or model list. Before evaluating, obtain a compatible endpoint, model ID, and any required credential. Existing connections use the SDK [native adapter](https://github.com/ziyu/system-one-sdk/tree/main/packages/adapter-system-one), which sends `{model,state,questions}` to `<baseURL>/systemone`. An explicit `adapter: "openrouter"` connection uses [OpenRouter Decisions](https://openrouter.ai/blog/insights/what-is-jev/) at `/api/alpha/decisions`. Both return typed answers; the [scripted HTTP fixture](packages/system-one-cli/test/cli.test.mjs) shows the wire shape. A generic chat-completions endpoint cannot serve either route. The local address and model below are illustrative.
 
 ## Usage
 
@@ -70,7 +76,7 @@ printf '%s\n' '{"state":{"evidence":"A required check failed."},"questions":{"re
 
 Success writes one JSON value with `connectionId` to stdout. For the Choice request above, read `answers.release.choice` (such as `wait` or `proceed`); see the [CLI JSON contract](packages/system-one-cli/README.md#json-contract) for other normalized fields. Failure exits nonzero, leaves stdout empty, and writes a sanitized JSON error to stderr. Calls make one attempt with no connection or model fallback. `--connection` and `--model` select one-call overrides; they do not edit the catalog.
 
-The Pi extension uses the same catalog. Agent access starts off unless user-global preferences turn it on. `/so settings` edits connections and defaults, `/so ask` submits a manual request while agent access is off, and `/so on|off`, `/so use`, and `/so mode` change the current session. See the [Pi command reference](packages/pi-system-one/README.md) for the full command list and session behavior. The Quick Start loads the extension from source for a one-off session. The npm install command in its package README applies after publication.
+The Pi extension uses the same catalog. Agent access starts off unless user-global preferences turn it on. `/so settings` edits connections and defaults, `/so ask` submits a manual request while agent access is off, and `/so on|off`, `/so use`, and `/so mode` change the current session. See the [Pi command reference](packages/pi-system-one/README.md) for the full command list and session behavior. The Quick Start loads the extension from source for a one-off session; the Git install above persists it in Pi settings. The npm install command in its package README applies after publication.
 
 ## Validation
 

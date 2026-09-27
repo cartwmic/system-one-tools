@@ -65,10 +65,15 @@ Status includes effective/default access and mode, session overrides, the active
 
 ## Install
 
-After publication, install the shared package and this one Pi extension:
+Install the current Git source through its root Pi manifest:
 
 ```sh
-pi install npm:@cartwmic/system-one-connections@0.1.0
+pi install https://github.com/cartwmic/system-one-tools
+```
+
+Pi installs the repository's runtime dependencies, builds the shared connection package, and loads this one extension. The npm packages are not published yet. After publication, the intended registry install is:
+
+```sh
 pi install npm:@cartwmic/pi-system-one@0.1.0
 ```
 
