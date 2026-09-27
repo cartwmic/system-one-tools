@@ -1,85 +1,84 @@
 # System One tools
 
-A small npm workspace with three separately installable packages:
+## Purpose
 
-- `@cartwmic/system-one-connections` — the shared user-level connection catalog and SDK client.
-- `@cartwmic/system-one-cli` — the standalone `system-one` JSON command.
-- `@cartwmic/pi-system-one` — one Pi extension containing the `system_one` agent tool and the owner-facing `/so` commands/settings UI.
+This repository has a `system-one` JSON command and one Pi extension for Choice, Boolean, and Score judgments over supplied evidence. Both use the published `@system-one-ai` SDK through a shared connection catalog:
 
-All packages are version **0.1.0** and are not published. This repository does not publish or install packages into a live Pi configuration, edit dotfiles, or call a paid provider.
+- [`@cartwmic/system-one-connections`](packages/system-one-connections/README.md) reads named endpoints, models, and credential environment-variable names.
+- [`@cartwmic/system-one-cli`](packages/system-one-cli/README.md) provides the standalone command for scripts and other harnesses.
+- [`@cartwmic/pi-system-one`](packages/pi-system-one/README.md) provides the `system_one` agent tool and owner-facing `/so` commands.
 
-## Requirements
+Use a compatible System One HTTP service for an atomic question with enough relevant evidence. Probabilities are advisory; they do not authorize an action. Do not use this tool for factual lookup, exact calculations, open-ended generation, or substantial reasoning. The packages are at version 0.1.0 and have not been published to npm. This public source has no LICENSE file; each package manifest declares `UNLICENSED`. Ask the owner for permission before reusing or redistributing the code.
 
-- Node.js 20+ for the shared package and CLI.
-- Pi 0.87.1 was used for validation; the Pi extension requires Node.js 22.19+.
-- `npm run test:package` is run on macOS with Docker available. It checks independent macOS CLI and Pi package consumers and a Node 20 Linux CLI consumer in Docker.
-- `npm run test:tui` requires Pi and Python 3. It drives Pi's real TUI in an isolated PTY. This is not a tmux-backed scenario; it does not claim tmux-specific coverage.
+## Quick Start
 
-## Build and scripted proof
+For the full workspace, use Node.js 22.19+ and npm on macOS or Linux. The CLI and shared package support Node.js 20+. Pi is needed for the Pi tests; the extension was tested with Pi 0.87.1. This Quick Start exercises the CLI from source. The Pi package has no npm registry install yet; `npm run test:tui` loads a packed local copy in an isolated Pi session with a scripted backend. Your regular Pi configuration stays unchanged.
 
 ```sh
-npm install
+git clone https://github.com/cartwmic/system-one-tools.git
+cd system-one-tools
+npm ci
+npm run build
+node packages/system-one-cli/dist/cli.js --help
+```
+
+These commands build the checkout and show CLI help. To open the Pi extension from this checkout, run from the repository root:
+
+```sh
+pi --no-session --no-extensions --extension ./packages/pi-system-one/src/index.js
+```
+
+Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. Before evaluating, start a service that implements the compatible System One state-plus-questions route and save a connection as shown below.
+
+## Usage
+
+The CLI and Pi read `${XDG_CONFIG_HOME:-$HOME/.config}/system-one/connections.json`. For a local service listening on port 8317, create a catalog with a default:
+
+```sh
+catalog="${XDG_CONFIG_HOME:-$HOME/.config}/system-one/connections.json"
+mkdir -p "$(dirname "$catalog")"
+( set -C; cat > "$catalog" <<'JSON'
+{"version":1,"default":"local","connections":{"local":{"baseURL":"http://127.0.0.1:8317/v1","model":"local-system-one"}}}
+JSON
+)
+```
+
+This example refuses to replace an existing catalog. If you already have one, edit it to add the named connection and choose its default deliberately. The SDK appends `/systemone` to `baseURL`. For a service that needs a key, set `apiKeyEnv` to the **name** of an environment variable and export its value in the caller's environment. The catalog must not contain the key value. [Connection examples](packages/system-one-connections/examples/connections.example.json) include direct and OpenRouter-compatible base paths.
+
+With that local service running, submit one SDK-shaped request:
+
+```sh
+printf '%s\n' '{"state":{"evidence":"A required check failed."},"questions":{"release":{"type":"choice","instructions":"What does the evidence support?","criteria":{"wait":"Wait","proceed":"Proceed"}}}}' | node packages/system-one-cli/dist/cli.js
+```
+
+Success writes one JSON value with `connectionId` to stdout. Failure exits nonzero, leaves stdout empty, and writes a sanitized JSON error to stderr. Calls make one attempt with no connection or model fallback. `--connection` and `--model` select one-call overrides; they do not edit the catalog.
+
+The Pi extension uses the same catalog. Agent access starts off unless user-global preferences turn it on. `/so settings` edits connections and defaults, `/so ask` submits a manual request while agent access is off, and `/so on|off`, `/so use`, and `/so mode` change the current session. See the [Pi command reference](packages/pi-system-one/README.md) for the full command list and session behavior. The Quick Start loads the extension from source for a one-off session. The npm install command in its package README applies after publication.
+
+## Validation
+
+Run the full scripted checks with Node.js 22.19+, Pi, and Python 3 installed. The package matrix also needs macOS with Docker running:
+
+```sh
 npm run check
 npm run test:journey
 npm run test:tui
 npm run test:package
 ```
 
-The exact root scripts are:
+`check` builds the three packages and runs offline tests. `test:journey` installs local tarballs in separate CLI and Pi consumers, saves a catalog entry through `/so settings`, then checks that the CLI and a real Pi turn use the same scripted endpoint. `test:tui` drives Pi through `/reload`, `/new`, manual use, and Ctrl+G in an isolated PTY. Inspect its TAP output for a completed test with zero skips. `test:package` checks independent macOS consumers and a Linux Node 20 CLI consumer in Docker; it does not run Pi under Node 20.
 
-- `check` — builds the three workspaces and runs their offline tests.
-- `test:journey` — installs local package tarballs in separate CLI and Pi consumers. In one temporary user home, it saves a connection and catalog default through the installed extension's real `/so settings` command, then evaluates through the CLI and a real Pi agent turn. Both must reach the same scripted HTTP endpoint, despite a conflicting project-local Pi setting.
-- `test:tui` — drives the real Pi TUI through `/so`, `/reload`, manual ask, and Ctrl+G with a scripted external editor and local backend.
-- `test:package` — builds and packs the shared package, then installs it with exactly one driver package in each clean consumer: shared+CLI and shared+Pi. It verifies resolution stays inside each consumer, exercises real CLI and Pi paths against dummy HTTP services, tests failures, and runs the Node 20 Linux CLI consumer in Docker. Run this matrix on macOS.
+All backends in these checks are scripted. They do not establish authenticated behavior with live TypeSafe or OpenRouter, and they do not establish probability calibration for a local model. A live smoke test may incur charges. Repository procedure and proof boundaries for contributors are in [AGENTS.md](AGENTS.md).
 
-All test backends are scripted and local. No test needs a real credential or makes a live provider call. Scripted protocol and package proof do not establish authenticated TypeSafe/OpenRouter compatibility or semantic calibration of a local model. No live backend was exercised.
+## Troubleshooting
 
-## Shared connection catalog
-
-The CLI and Pi use the same catalog at `${XDG_CONFIG_HOME:-~/.config}/system-one/connections.json`. The catalog stores endpoint configuration, a model ID, and optionally the **name** of an environment variable—not its secret value. A non-secret local example:
-
-```json
-{
-  "version": 1,
-  "default": "local",
-  "connections": {
-    "local": {
-      "baseURL": "http://127.0.0.1:8317/v1",
-      "model": "local-system-one"
-    }
-  }
-}
-```
-
-Set a configured credential variable in the caller's runtime environment. A connection without `apiKeyEnv` makes unauthenticated requests. The shared package rejects inline keys and URLs containing credentials. The SDK appends its System One route to the configured base URL; each service must implement the compatible System One state-plus-questions protocol.
-
-Provider-specific endpoint examples are configuration data in [`packages/system-one-connections/examples/connections.example.json`](packages/system-one-connections/examples/connections.example.json). See the [connection package README](packages/system-one-connections/README.md) for catalog schema and API details.
-
-## CLI
-
-After publication, install the CLI; its versioned shared-package dependency is installed with it:
-
-```sh
-npm install --global @cartwmic/system-one-cli@0.1.0
-system-one --help
-cat request.json | system-one
-system-one --connection local --model one-call-model --file request.json
-```
-
-The command reads one JSON request with `state` and named Choice, Boolean, or Score `questions`. `--connection` selects a configured connection and `--model` overrides its model for this call only; neither changes saved settings. On success, stdout contains one SDK-shaped JSON result with `connectionId`. On failure, stdout is empty, stderr contains one sanitized JSON error, and the process exits nonzero. It makes one attempt and never falls back. See the [CLI README](packages/system-one-cli/README.md) for request/result examples and error codes.
-
-Use a decision model only for an atomic, specific judgment over sufficient relevant evidence. Do not use it for factual retrieval, exact calculations, vague impressions, open-ended generation, or substantial multi-step reasoning. Probabilities and confidence are advisory, not guarantees or permission to act. Send only the state and questions needed for the call.
-
-## Pi
-
-After publication, install the single Pi extension:
-
-```sh
-pi install npm:@cartwmic/pi-system-one@0.1.0
-```
-
-Agent access is off by default. `/so settings` can save user-global agent-access and prompting-mode defaults and edit named connections and the catalog default. Preferences live at `<PI_CODING_AGENT_DIR>/system-one/preferences.json` (normally `~/.pi/agent/system-one/preferences.json`). Project-local Pi settings cannot enable the agent tool or redirect its connection. `/so on|off` changes access for the current session; `/so use` selects the owner's session connection; `/so status` shows effective settings.
-
-The modes are Explicit, Selective (default), Proactive, and Custom. They guide when to use the tool; none changes its fixed evidence, data, or action limits. The agent can submit only explicit `state` and `questions`; it cannot choose a connection/model or automatically attach files, repository content, or conversation history. `/so ask` remains available while agent access is off and displays its result in the terminal without adding it to agent context. `/so guidance` edits Custom mode text; Ctrl+G opens Pi's configured external editor.
-
-Each call makes one attempt. Endpoint, model, limits, possible provider costs, and local-model calibration vary by connection. Proactive use can make multiple billable calls over time; results remain advisory. See the [Pi package README](packages/pi-system-one/README.md) for commands, preference behavior, and failure handling.
+- `CONNECTION_CATALOG_ERROR`: the catalog file is missing or invalid. Check its path and JSON first; `--connection` cannot repair a missing catalog.
+- `CONNECTION_SELECTION_ERROR`: the catalog has no default or the selected name is absent. Set `default`, or pass `--connection` with a configured name. Pi users with the extension loaded can use `/so settings`.
+- `MISSING_CREDENTIAL`: export the variable named by the selected connection's `apiKeyEnv` in the process running the CLI or Pi. Keep the value out of the catalog.
+- `NETWORK_ERROR`: the selected service cannot be reached. Start it and check the catalog's host and port.
+- `PROVIDER_REJECTED`: the service returned an HTTP error. Check the stderr status, server logs, route, model, and required credential environment variable.
+- `MALFORMED_RESPONSE`: the endpoint returned data the native adapter could not decode. Compare its JSON `model` and typed `answers` with the [`providerResponse` fixture](packages/system-one-cli/test/cli.test.mjs), then inspect the server logs. The published `@system-one-ai/adapter-system-one` defines the accepted protocol.
+- `/so` is unknown: Pi has not loaded the extension. From the repository root, start a new session with `pi --no-session --no-extensions --extension ./packages/pi-system-one/src/index.js`, then run `/so status`.
+- `/so status` works and `system_one` is absent: agent access defaults off. Run `/so on` for this session. Project-local Pi settings cannot enable it.
+- `test:tui` skips its selected TUI case: install Python 3 and rerun; the expected result is one test passed with zero skips. Pi must also be installed. The TUI proof uses a PTY, with no tmux-specific coverage.
+- `test:package` cannot start its matrix: run it on macOS with Docker available.
