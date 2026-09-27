@@ -29,7 +29,7 @@ By default, callers read `~/.config/system-one/connections.json`. `XDG_CONFIG_HO
 }
 ```
 
-The native adapter appends its System One route to the configured base URL. Use a compatible System One state-plus-questions endpoint. A connection without `apiKeyEnv` is unauthenticated. `apiKeyEnv` stores only an environment-variable **name**; the key value is resolved from the runtime environment immediately before the request and is never read from or written to the catalog. Unknown fields (including inline credential fields), URLs with embedded credentials, and malformed catalogs are rejected.
+The native adapter appends `/systemone` to the configured base URL. Use a compatible System One state-plus-questions endpoint; a generic chat-completions endpoint cannot serve that route. The OpenRouter entry above illustrates a URL shape, and live OpenRouter compatibility has not been verified. A connection without `apiKeyEnv` is unauthenticated. `apiKeyEnv` stores only an environment-variable **name**; the key value is resolved from the runtime environment immediately before the request and is never read from or written to the catalog. Unknown fields (including inline credential fields), URLs with embedded credentials, and malformed catalogs are rejected.
 
 Copy [`examples/connections.example.json`](./examples/connections.example.json) as a starting point and replace model IDs as needed. Set credential variables in the caller's environment; do not put their values in this file.
 

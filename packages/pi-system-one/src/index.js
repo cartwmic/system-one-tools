@@ -225,10 +225,12 @@ export default function piSystemOneExtension(pi) {
       const connected = createConnectionClient(catalog, overrides);
       connection = connected.connection;
       const result = await connected.client.evaluate(request, signal ? { signal } : {});
+      const secret = connection.apiKeyEnv === undefined ? undefined : process.env[connection.apiKeyEnv];
+      const safeResult = secret ? redactCredential(result, secret) : result;
       return Object.freeze({
         connectionId: connection.connectionId,
-        model: result.model,
-        result,
+        model: safeResult.model,
+        result: safeResult,
       });
     } catch (error) {
       throw new Error(safeErrorMessage(error, connection?.apiKeyEnv ? process.env[connection.apiKeyEnv] : undefined));
@@ -339,6 +341,17 @@ function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function redactCredential(value, secret) {
+  if (typeof value === "string") return value.replaceAll(secret, "[REDACTED]");
+  if (Array.isArray(value)) return value.map((item) => redactCredential(item, secret));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key.replaceAll(secret, "[REDACTED]"), redactCredential(item, secret),
+    ]));
+  }
+  return value;
 }
 
 function safeErrorMessage(error, secret) {

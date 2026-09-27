@@ -42,9 +42,9 @@ A request is one object using the SDK request fields, except that model selectio
 }
 ```
 
-`providerOptions` may also be supplied when needed by an SDK adapter. Choice, Boolean, and Score questions keep the SDK's public shape; the native adapter handles the wire protocol. The command makes one evaluation attempt and never retries or falls back to another connection or model.
+The current native adapter rejects nonempty `providerOptions` with `UNSUPPORTED_REQUEST`; omit that field. Choice, Boolean, and Score questions keep the SDK's public shape; the native adapter handles the wire protocol. The command makes one evaluation attempt and never retries or falls back to another connection or model.
 
-A successful invocation exits 0 and writes exactly one JSON object followed by a newline to stdout. It preserves the SDK result fields—including the resolved `model`, typed `answers`, any supplied probabilities, confidence, usage, warnings, metadata, and response details—and adds the selected `connectionId` at the top level. Missing provider fields remain missing; the CLI does not invent answer data.
+A successful invocation exits 0 and writes exactly one JSON object followed by a newline to stdout. It returns the normalized SDK result—including the resolved `model`, typed `answers`, any supplied probabilities, confidence, usage, warnings, metadata, and response details—and adds the selected `connectionId` at the top level. The SDK may add empty usage or warning containers and response-attempt metadata even when the provider omits them. The CLI does not invent answer probabilities or confidence.
 
 A failed invocation exits nonzero, leaves stdout empty, and writes exactly one sanitized JSON object to stderr:
 
@@ -52,7 +52,7 @@ A failed invocation exits nonzero, leaves stdout empty, and writes exactly one s
 {"error":{"code":"TIMEOUT","message":"The evaluation timed out."}}
 ```
 
-Common stable error codes include `INVALID_JSON`, `INVALID_INPUT`, `CONNECTION_CATALOG_ERROR`, `CONNECTION_SELECTION_ERROR`, `MISSING_CREDENTIAL`, `TIMEOUT`, `CANCELLED`, `MALFORMED_RESPONSE`, `PROVIDER_REJECTED`, and `NETWORK_ERROR`. Error messages do not include provider bodies or credential values. If provider-returned output contains the selected connection's credential value, that value is redacted before stdout is written. Ctrl-C and SIGTERM cancel an active call and produce an explicit `CANCELLED` error; there is no success-shaped partial answer.
+Common stable error codes include `INVALID_JSON`, `INVALID_INPUT`, `CONNECTION_CATALOG_ERROR`, `CONNECTION_SELECTION_ERROR`, `MISSING_CREDENTIAL`, `TIMEOUT`, `CANCELLED`, `MALFORMED_RESPONSE`, `PROVIDER_REJECTED`, and `NETWORK_ERROR`. Error messages do not include provider bodies or credential values. Provider-echoed credential text in result strings or field names is redacted before stdout is written. Numeric result values remain numbers. Ctrl-C and SIGTERM cancel an active call and produce an explicit `CANCELLED` error; there is no success-shaped partial answer.
 
 ## When to use a decision model
 

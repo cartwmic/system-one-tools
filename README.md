@@ -12,7 +12,7 @@ Use a compatible System One HTTP service for an atomic question with enough rele
 
 ## Quick Start
 
-For the full workspace, use Node.js 22.19+ and npm on macOS or Linux. The CLI and shared package support Node.js 20+. Pi is needed for the Pi tests; the extension was tested with Pi 0.87.1. This Quick Start exercises the CLI from source. The Pi package has no npm registry install yet; `npm run test:tui` loads a packed local copy in an isolated Pi session with a scripted backend. Your regular Pi configuration stays unchanged.
+For the full workspace, use Node.js 22.19+ and npm on macOS or Linux. The CLI and shared package support Node.js 20+. Pi is needed for the Pi tests; [install Pi separately](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#getting-started). The extension was tested with Pi 0.87.1. Other Pi versions have not been verified here. This Quick Start exercises the CLI from source. The Pi package has no npm registry install yet; `npm run test:tui` loads a packed local copy in an isolated Pi session with a scripted backend. Your regular Pi configuration stays unchanged.
 
 ```sh
 git clone https://github.com/cartwmic/system-one-tools.git
@@ -28,7 +28,7 @@ These commands build the checkout and show CLI help. To open the Pi extension fr
 pi --no-session --no-extensions --extension ./packages/pi-system-one/src/index.js
 ```
 
-Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. Before evaluating, start a service that implements the compatible System One state-plus-questions route and save a connection as shown below.
+Enter `/so status` in Pi. This one-off session does not install a package or save a conversation; `--no-extensions` disables other extension discovery. For an isolated scripted Pi journey, use `npm run test:tui` under [Validation](#validation). Building does not configure a decision endpoint. This checkout ships no service or model list. Before evaluating, obtain a native System One endpoint, a model ID, and any required credential from its operator. The selected SDK [native adapter](https://github.com/ziyu/system-one-sdk/tree/main/packages/adapter-system-one) sends `{model,state,questions}` to `<baseURL>/systemone` and expects typed answers; the [scripted HTTP fixture](packages/system-one-cli/test/cli.test.mjs) shows the request and response shape. A generic chat-completions endpoint cannot serve that route. The local address and model below are illustrative; replace them with the compatible service's values.
 
 ## Usage
 
@@ -43,7 +43,7 @@ JSON
 )
 ```
 
-This example refuses to replace an existing catalog. If you already have one, edit it to add the named connection and choose its default deliberately. The SDK appends `/systemone` to `baseURL`. For a service that needs a key, set `apiKeyEnv` to the **name** of an environment variable and export its value in the caller's environment. The catalog must not contain the key value. [Connection examples](packages/system-one-connections/examples/connections.example.json) include direct and OpenRouter-compatible base paths.
+This example refuses to replace an existing catalog. If you already have one, edit it to add the named connection and choose its default deliberately. The SDK appends `/systemone` to `baseURL`. For a service that needs a key, set `apiKeyEnv` to the **name** of an environment variable and export its value in the caller's environment. The catalog must not contain the key value. [Connection examples](packages/system-one-connections/examples/connections.example.json) show URL shapes, including an OpenRouter-shaped path. The native adapter still requires a compatible `/systemone` route; live OpenRouter compatibility has not been verified.
 
 With that local service running, submit one SDK-shaped request:
 
@@ -51,7 +51,7 @@ With that local service running, submit one SDK-shaped request:
 printf '%s\n' '{"state":{"evidence":"A required check failed."},"questions":{"release":{"type":"choice","instructions":"What does the evidence support?","criteria":{"wait":"Wait","proceed":"Proceed"}}}}' | node packages/system-one-cli/dist/cli.js
 ```
 
-Success writes one JSON value with `connectionId` to stdout. Failure exits nonzero, leaves stdout empty, and writes a sanitized JSON error to stderr. Calls make one attempt with no connection or model fallback. `--connection` and `--model` select one-call overrides; they do not edit the catalog.
+Success writes one JSON value with `connectionId` to stdout. For the Choice request above, read `answers.release.choice` (such as `wait` or `proceed`); see the [CLI JSON contract](packages/system-one-cli/README.md#json-contract) for other normalized fields. Failure exits nonzero, leaves stdout empty, and writes a sanitized JSON error to stderr. Calls make one attempt with no connection or model fallback. `--connection` and `--model` select one-call overrides; they do not edit the catalog.
 
 The Pi extension uses the same catalog. Agent access starts off unless user-global preferences turn it on. `/so settings` edits connections and defaults, `/so ask` submits a manual request while agent access is off, and `/so on|off`, `/so use`, and `/so mode` change the current session. See the [Pi command reference](packages/pi-system-one/README.md) for the full command list and session behavior. The Quick Start loads the extension from source for a one-off session. The npm install command in its package README applies after publication.
 
@@ -75,6 +75,7 @@ All backends in these checks are scripted. They do not establish authenticated b
 - `CONNECTION_CATALOG_ERROR`: the catalog file is missing or invalid. Check its path and JSON first; `--connection` cannot repair a missing catalog.
 - `CONNECTION_SELECTION_ERROR`: the catalog has no default or the selected name is absent. Set `default`, or pass `--connection` with a configured name. Pi users with the extension loaded can use `/so settings`.
 - `MISSING_CREDENTIAL`: export the variable named by the selected connection's `apiKeyEnv` in the process running the CLI or Pi. Keep the value out of the catalog.
+- `TIMEOUT`: the pinned SDK 0.6.0 defaults to a 10-second evaluation deadline. The CLI accepts `--timeout-ms` for slower services. The current Pi tool and `/so ask` do not expose a timeout override; check the service's latency.
 - `NETWORK_ERROR`: the selected service cannot be reached. Start it and check the catalog's host and port.
 - `PROVIDER_REJECTED`: the service returned an HTTP error. Check the stderr status, server logs, route, model, and required credential environment variable.
 - `MALFORMED_RESPONSE`: the endpoint returned data the native adapter could not decode. Compare its JSON `model` and typed `answers` with the [`providerResponse` fixture](packages/system-one-cli/test/cli.test.mjs), then inspect the server logs. The published `@system-one-ai/adapter-system-one` defines the accepted protocol.

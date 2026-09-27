@@ -40,8 +40,9 @@ Options:
   -h, --help           Show this help
 
 Request JSON:
-  {"state": ..., "questions": { ... }, "providerOptions": { ... }}
-  Omit providerOptions when it is not needed. Put model selection in --model.
+  {"state": ..., "questions": { ... }}
+  Nonempty providerOptions are unsupported by the native adapter.
+  Put model selection in --model.
   Questions use the SDK's Choice, Boolean, and Score shapes.
 
 Success writes one JSON object to stdout: the SDK result fields plus
@@ -263,13 +264,20 @@ function formatError(error: unknown, cancelled: boolean): PublicError {
   }
 }
 
-function jsonLine(value: unknown, secret?: string): string {
-  let serialized = JSON.stringify(value);
-  if (secret !== undefined && secret.length > 0) {
-    const escapedSecret = JSON.stringify(secret).slice(1, -1);
-    serialized = serialized.replaceAll(escapedSecret, "[REDACTED]");
+function redactCredential(value: unknown, secret: string): unknown {
+  if (typeof value === "string") return value.replaceAll(secret, "[REDACTED]");
+  if (Array.isArray(value)) return value.map((item) => redactCredential(item, secret));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key.replaceAll(secret, "[REDACTED]"), redactCredential(item, secret),
+    ]));
   }
-  return `${serialized}\n`;
+  return value;
+}
+
+function jsonLine(value: unknown, secret?: string): string {
+  const output = secret === undefined || secret.length === 0 ? value : redactCredential(value, secret);
+  return `${JSON.stringify(output)}\n`;
 }
 
 async function main(): Promise<void> {

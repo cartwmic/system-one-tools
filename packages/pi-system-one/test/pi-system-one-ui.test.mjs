@@ -519,10 +519,13 @@ await test("editing the shared catalog does not redirect an in-flight call but a
   }
 });
 
-async function runInteractivePi(args, env, timeoutMs = 75_000) {
+async function runInteractivePi(args, env, cwd, timeoutMs = 75_000) {
   const python = String.raw`
 import errno, os, pty, select, signal, sys, time
-command = sys.argv[1:]
+expected_cwd = sys.argv[1]
+command = sys.argv[2:]
+if os.path.realpath(os.getcwd()) != os.path.realpath(expected_cwd):
+    raise RuntimeError("Pi PTY started outside the isolated project: " + os.getcwd())
 pid, fd = pty.fork()
 if pid == 0:
     os.execvpe(command[0], command, os.environ)
@@ -621,7 +624,7 @@ sys.stdout.buffer.write(output)
 
 `;
   return new Promise((resolve, reject) => {
-    const child = spawn("python3", ["-c", python, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("python3", ["-c", python, cwd, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = Buffer.alloc(0);
     let stderr = "";
     let timedOut = false;
@@ -706,11 +709,12 @@ await test("a real Pi TUI owner journey preserves nondefault controls through /r
       piBin,
       "--no-session",
       "--no-extensions",
+      "--no-context-files",
       "--provider", "scripted",
       "--model", "scripted-model",
       "--extension", packagedAgentExtension,
       "--tools", "system_one",
-    ], env);
+    ], env, cwd);
     assert.equal(result.timedOut, false, `Pi TUI timed out.\n${result.stdout.slice(-8000)}\n${result.stderr}`);
     assert.equal(result.status, 0, `Pi TUI failed (${result.signal}).\n${result.stdout.slice(-8000)}\n${result.stderr}`);
     const terminal = plainTerminal(result.stdout);

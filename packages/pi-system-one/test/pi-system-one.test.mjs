@@ -59,7 +59,7 @@ const request = {
   },
 };
 
-async function startServer() {
+async function startServer(echoCredential = false) {
   const received = [];
   const server = createServer(async (req, res) => {
     const chunks = [];
@@ -78,7 +78,13 @@ async function startServer() {
       }
     }
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ model: "scripted-resolved-model", answers, usage: { input_tokens: 21, output_tokens: 8 } }));
+    const credential = req.headers.authorization?.replace(/^Bearer /i, "");
+    res.end(JSON.stringify({
+      model: "scripted-resolved-model",
+      answers,
+      usage: { input_tokens: 21, output_tokens: 8 },
+      ...(echoCredential ? { providerMetadata: { [`echo${credential}`]: credential, nested: [`Bearer ${credential}`] } } : {}),
+    }));
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -432,13 +438,56 @@ await test("Pi loader tool, owner API, branch state, prompt modes, and scripted 
   }
 });
 
+await test("Pi manual and agent successes redact provider-echoed credentials", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-system-one-redaction-"));
+  const cwd = join(root, "project");
+  const agentDir = join(root, "pi-agent");
+  const configHome = join(root, "xdg");
+  const fixture = await startServer(true);
+  const keyName = "SYSTEM_ONE_PI_RESULT_TEST_KEY";
+  const secret = "pi-synthetic-secret-must-not-print";
+  const previousKey = process.env[keyName];
+  let harness;
+  try {
+    process.env[keyName] = secret;
+    await mkdir(cwd, { recursive: true });
+    await withAgentEnvironment({ HOME: root, XDG_CONFIG_HOME: configHome, PI_CODING_AGENT_DIR: agentDir }, async () => {
+      await saveSystemOnePreferences(PREFERENCES(true));
+      await writeConnectionCatalog({
+        version: 1,
+        default: "owner",
+        connections: { owner: { baseURL: `${fixture.origin}/v1`, model: "model", apiKeyEnv: keyName } },
+      }, getDefaultCatalogPath(process.env));
+      harness = await loadHarness(cwd, piRuntime.SessionManager.inMemory(cwd));
+      await emitSessionStart(harness.runner, "startup");
+      const api = getSystemOneApi({ events: harness.eventBus });
+      const manual = await api.evaluateManual(request);
+      assert.equal(manual.result.providerMetadata["echo[REDACTED]"], "[REDACTED]");
+      assert.deepEqual(manual.result.providerMetadata.nested, ["Bearer [REDACTED]"]);
+
+      const toolResult = await toolDefinition(harness.runner).execute("redacted", request, undefined, undefined, harness.runner.createContext());
+      assert.equal(toolResult.details.result.providerMetadata["echo[REDACTED]"], "[REDACTED]");
+      assert.equal(toolResult.content[0].text.includes(secret), false);
+      assert.equal(JSON.stringify(toolResult.details).includes(secret), false);
+      assert.deepEqual(fixture.received.map((entry) => entry.authorization), [`Bearer ${secret}`, `Bearer ${secret}`]);
+    });
+  } finally {
+    if (previousKey === undefined) delete process.env[keyName];
+    else process.env[keyName] = previousKey;
+    harness?.runner.invalidate("test finished");
+    await fixture.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 await test("a real Pi agent turn calls the loaded tool and reaches the scripted decision backend", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-system-one-agent-journey-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "pi-agent");
   const configHome = join(root, "xdg");
-  const decisionServer = await startServer();
+  const decisionServer = await startServer(true);
   const piProvider = await startScriptedPiProvider();
+  const decisionKey = "pi-scripted-secret-must-not-print";
   try {
     await mkdir(join(cwd, ".pi"), { recursive: true });
     await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
@@ -450,7 +499,7 @@ await test("a real Pi agent turn calls the loaded tool and reaches the scripted 
       version: 1,
       default: "owner",
       connections: {
-        owner: { baseURL: `${decisionServer.origin}/owner/v1`, model: "owner-decision-model" },
+        owner: { baseURL: `${decisionServer.origin}/owner/v1`, model: "owner-decision-model", apiKeyEnv: "SYSTEM_ONE_PI_DECISION_KEY" },
         project: { baseURL: `${decisionServer.origin}/project/v1`, model: "project-decision-model" },
       },
     }, getDefaultCatalogPath(userEnv));
@@ -491,6 +540,7 @@ await test("a real Pi agent turn calls the loaded tool and reaches the scripted 
         PI_OFFLINE: "1",
         PI_TELEMETRY: "0",
         SCRIPTED_PI_API_KEY: "scripted-pi-api-key",
+        SYSTEM_ONE_PI_DECISION_KEY: decisionKey,
       },
     });
 
@@ -509,6 +559,10 @@ await test("a real Pi agent turn calls the loaded tool and reaches the scripted 
     assert.equal(decisionServer.received.length, 1, "the actual Pi agent tool call should finish through the scripted decision server");
     const decision = decisionServer.received[0];
     assert.equal(decision.url, "/owner/v1/systemone", "project-local settings must not redirect the owner catalog default");
+    assert.equal(decision.authorization, `Bearer ${decisionKey}`);
+    const followupMessages = JSON.stringify(piProvider.requests[1].body.messages);
+    assert.equal(followupMessages.includes(decisionKey), false, "the agent's next turn must not receive an echoed credential");
+    assert.match(followupMessages, /\[REDACTED\]/, "the agent must receive the sanitized decision result");
     assert.deepEqual(Object.keys(decision.body).sort(), ["model", "questions", "state"]);
     assert.equal(decision.body.model, "owner-decision-model");
     assert.deepEqual(decision.body.state, { evidence: "The project note says release is blocked by a failing check." });

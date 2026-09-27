@@ -182,6 +182,7 @@ test("--help documents the JSON contract and judgment boundary", async t => {
   assert.match(result.stdout, /Usage: system-one/);
   assert.match(result.stdout, /--connection ID/);
   assert.match(result.stdout, /one JSON object to stdout/);
+  assert.match(result.stdout, /Nonempty providerOptions are unsupported/);
   assert.match(result.stdout, /factual lookup, exact calculations/);
 });
 
@@ -261,6 +262,30 @@ test("stdin and --file run the same questions over direct, OpenRouter-compatible
   }
 });
 
+test("a one-character credential leaves numeric results intact and redacts echoed strings and keys", async t => {
+  const server = await startServer(async (_req, res) => sendJson(res, 200, {
+    ...providerResponse,
+    providerMetadata: { echo1: "Bearer 1", nested: ["1"] },
+  }));
+  t.after(() => server.close());
+  const harness = await createHarness(t);
+  harness.env.SYSTEM_ONE_CLI_TEST_KEY = "1";
+  await harness.catalog({
+    version: 1,
+    default: "short-key",
+    connections: { "short-key": { baseURL: `${server.origin}/v1`, model: "model", apiKeyEnv: "SYSTEM_ONE_CLI_TEST_KEY" } },
+  });
+
+  const result = await run(harness);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.providerMetadata["echo[REDACTED]"], "Bearer [REDACTED]");
+  assert.deepEqual(output.providerMetadata.nested, ["[REDACTED]"]);
+  assert.equal(output.answers.score.score, 1.53);
+  assert.equal(server.requests[0].authorization, "Bearer 1");
+});
+
 test("sparse provider success does not invent probabilities, confidence, or usage", async t => {
   const server = await startServer(async (_req, res) => sendJson(res, 200, {
     model: "sparse-resolved-model",
@@ -323,6 +348,20 @@ test("missing default and missing selected credential fail explicitly without a 
   const missingKey = await run(harness);
   assertFailure(missingKey, "MISSING_CREDENTIAL");
   assert.equal(calls, 0);
+});
+
+test("the native adapter rejects nonempty providerOptions before HTTP", async t => {
+  const server = await startServer(async (_req, res) => sendJson(res, 200, providerResponse));
+  t.after(() => server.close());
+  const harness = await createHarness(t);
+  await harness.catalog({
+    version: 1,
+    default: "local",
+    connections: { local: { baseURL: `${server.origin}/v1`, model: "model" } },
+  });
+
+  assertFailure(await run(harness, [], JSON.stringify({ ...request, providerOptions: { unsupported: true } })), "UNSUPPORTED_REQUEST");
+  assert.equal(server.requests.length, 0);
 });
 
 test("bad JSON, model-in-body, and incomplete requests return sanitized JSON failures", async t => {
