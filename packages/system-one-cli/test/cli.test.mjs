@@ -261,6 +261,41 @@ test("stdin and --file run the same questions over direct, OpenRouter-compatible
   }
 });
 
+test("sparse provider success does not invent probabilities, confidence, or usage", async t => {
+  const server = await startServer(async (_req, res) => sendJson(res, 200, {
+    model: "sparse-resolved-model",
+    answers: {
+      choice: { type: "choice", choice: "second" },
+      boolean: { type: "noul", noul: 0.62 },
+      score: { type: "score", score: 1 },
+    },
+  }));
+  t.after(() => server.close());
+  const harness = await createHarness(t);
+  await harness.catalog({
+    version: 1,
+    default: "sparse",
+    connections: { sparse: { baseURL: `${server.origin}/v1`, model: "configured-model" } },
+  });
+
+  const result = await run(harness);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout.trimEnd().split("\n").length, 1);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.connectionId, "sparse");
+  assert.equal(output.model, "sparse-resolved-model");
+  assert.deepEqual(output.answers, {
+    choice: { type: "choice", choice: "second" },
+    boolean: { type: "boolean", probability: 0.62 },
+    score: { type: "score", score: 1 },
+  });
+  assert.deepEqual(output.usage, {});
+  assert.deepEqual(output.warnings, []);
+  assert.equal(output.response.attempts, 1);
+  assert.equal(server.requests.length, 1);
+});
+
 test("missing default and missing selected credential fail explicitly without a request", async t => {
   let calls = 0;
   const server = await startServer(async (_req, res) => {
@@ -323,7 +358,7 @@ test("timeout is an explicit failure with one provider request", async t => {
     connections: { slow: { baseURL: `${server.origin}/v1`, model: "model" } },
   });
 
-  const result = await run(harness, ["--timeout-ms", "40"]);
+  const result = await run(harness, ["--timeout-ms", "250"]);
   assertFailure(result, "TIMEOUT");
   assert.equal(server.requests.length, 1);
 });

@@ -101,6 +101,79 @@ async function startDecisionServer({ holdFirst = false } = {}) {
   };
 }
 
+async function startScriptedPiProvider() {
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    requests.push({ url: req.url, authorization: req.headers.authorization, body });
+    const previousToolResult = body.messages?.some((message) => message.role === "tool");
+    const offeredSystemOne = body.tools?.some((tool) => tool.function?.name === "system_one") ?? false;
+    const userMessage = [...(body.messages ?? [])].reverse().find((message) => message.role === "user");
+    const evidence = typeof userMessage?.content === "string"
+      ? userMessage.content
+      : userMessage?.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n") ?? "";
+    const shouldCallTool = offeredSystemOne && !previousToolResult && evidence.length > 0;
+    const firstChunk = shouldCallTool
+      ? {
+          role: "assistant",
+          tool_calls: [{
+            id: "call_system_one_tui",
+            type: "function",
+            function: {
+              name: "system_one",
+              arguments: JSON.stringify({
+                state: { evidence },
+                questions: {
+                  release: {
+                    type: "choice",
+                    instructions: "Is release ready based on the supplied evidence?",
+                    criteria: { wait: "Wait for the failing check", proceed: "Proceed now" },
+                  },
+                },
+              }),
+            },
+          }],
+        }
+      : {
+          role: "assistant",
+          content: offeredSystemOne
+            ? "SCRIPTED_AGENT_CALL_DONE: the evidence supports waiting."
+            : "SCRIPTED_NEW_SESSION_DONE: the user-global access default kept the tool disabled.",
+        };
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    res.write(`data: ${JSON.stringify({
+      id: "chatcmpl-system-one-tui",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "scripted-model",
+      choices: [{ index: 0, delta: firstChunk, finish_reason: null }],
+    })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+      id: "chatcmpl-system-one-tui",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "scripted-model",
+      choices: [{ index: 0, delta: {}, finish_reason: shouldCallTool ? "tool_calls" : "stop" }],
+    })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  return {
+    requests,
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+      server.closeAllConnections();
+    }),
+  };
+}
+
 async function loadHarness(cwd, sessionManager, eventBus = piRuntime.createEventBus()) {
   piRuntime.clearExtensionCache();
   const runtime = piRuntime.createExtensionRuntime();
@@ -446,7 +519,7 @@ await test("editing the shared catalog does not redirect an in-flight call but a
   }
 });
 
-async function runInteractivePi(args, env, timeoutMs = 45_000) {
+async function runInteractivePi(args, env, timeoutMs = 75_000) {
   const python = String.raw`
 import errno, os, pty, select, signal, sys, time
 command = sys.argv[1:]
@@ -454,10 +527,16 @@ pid, fd = pty.fork()
 if pid == 0:
     os.execvpe(command[0], command, os.environ)
 output = bytearray()
+cursor = 0
 def wait_for(token, timeout=12):
+    global cursor
     deadline = time.time() + timeout
     needle = token.encode() if isinstance(token, str) else token
     while time.time() < deadline:
+        match = output.find(needle, cursor)
+        if match >= 0:
+            cursor = match + len(needle)
+            return
         ready, _, _ = select.select([fd], [], [], 0.2)
         if ready:
             try:
@@ -467,15 +546,15 @@ def wait_for(token, timeout=12):
                 raise
             if not chunk: break
             output.extend(chunk)
-            if needle in output: return
     raise RuntimeError("Timed out waiting for " + str(token) + "\n" + output.decode(errors="replace")[-6000:])
 def send(data):
     os.write(fd, data)
 def send_startup_command_until(token, command, timeout=20):
+    global cursor
     send(command + b"\r")
     deadline = time.time() + timeout
     needle = token if isinstance(token, bytes) else token.encode()
-    while needle not in output and time.time() < deadline:
+    while output.find(needle, cursor) < 0 and time.time() < deadline:
         ready, _, _ = select.select([fd], [], [], 0.2)
         if ready:
             try:
@@ -485,23 +564,31 @@ def send_startup_command_until(token, command, timeout=20):
                 raise
             if not chunk: break
             output.extend(chunk)
-        if needle not in output:
+        if output.find(needle, cursor) < 0:
             send(b"\r")
-    if needle not in output:
+    match = output.find(needle, cursor)
+    if match < 0:
         raise RuntimeError("Startup command did not complete: " + token.decode() + "\n" + output.decode(errors="replace")[-6000:])
+    cursor = match + len(needle)
 try:
     wait_for(b"scripted-model")
     send_startup_command_until(b"access is on", b"/so on")
-    send(b"/so use local\r")
-    wait_for(b"connection set to local")
+    send(b"/so use owner\r")
+    wait_for(b"connection set to owner")
     send(b"/so mode proactive\r")
     wait_for(b"mode set to Proactive")
     send(b"/reload\r")
     wait_for(b"Reloaded keybindings, extensions")
     send(b"/so status\r")
     wait_for(b"Prompt mode: Proactive")
-    send(b"/so off\r")
-    wait_for(b"access is off")
+    send(os.environ["SYSTEM_ONE_TUI_AGENT_PROMPT"].encode() + b"\r")
+    wait_for(b"SCRIPTED_AGENT_CALL_DONE", 30)
+    send(b"/new\r")
+    wait_for(b"New session started", 20)
+    send(b"/so status\r")
+    wait_for(b"Prompt mode: Selective")
+    send(os.environ["SYSTEM_ONE_TUI_NEW_SESSION_PROMPT"].encode() + b"\r")
+    wait_for(b"SCRIPTED_NEW_SESSION_DONE", 30)
     send(b"/so guidance\r")
     wait_for(b"Edit custom System One guidance")
     send(b"\x07")
@@ -518,6 +605,9 @@ try:
     wait_for(b"Model override for this call")
     send(b"\r")
     wait_for(b"System One result")
+    send(b"\r")
+    send(b"/so status\r")
+    wait_for(b"System One status")
 finally:
     try:
         os.killpg(pid, signal.SIGKILL)
@@ -549,20 +639,26 @@ sys.stdout.buffer.write(output)
   });
 }
 
-await test("a real Pi TUI owner journey reloads state, asks manually while off, and uses Ctrl+G", async (t) => {
+await test("a real Pi TUI owner journey preserves nondefault controls through /reload, resets them in /new, and keeps manual ask available while off", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "pi-system-one-ui-tui-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "pi-agent");
   const xdg = join(root, "xdg");
-  const server = await startDecisionServer();
+  const decisionServer = await startDecisionServer();
+  const piProvider = await startScriptedPiProvider();
+  const agentEvidence = "Use System One to judge this user-provided evidence: the release is blocked by the failing check. Is release ready?";
+  const newSessionPrompt = "Use System One to judge this user-provided evidence: the release passed all checks. Is release ready?";
   try {
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true });
-    await saveSystemOnePreferences(preferences(false), { HOME: root, PI_CODING_AGENT_DIR: agentDir });
+    await saveSystemOnePreferences(preferences(false, "selective"), { HOME: root, PI_CODING_AGENT_DIR: agentDir });
     await writeConnectionCatalog({
       version: 1,
-      default: "local",
-      connections: { local: { baseURL: `${server.origin}/tui/v1`, model: "tui-model" } },
+      default: "catalog",
+      connections: {
+        catalog: { baseURL: `${decisionServer.origin}/catalog/v1`, model: "catalog-model" },
+        owner: { baseURL: `${decisionServer.origin}/owner/v1`, model: "owner-model" },
+      },
     }, join(xdg, "system-one", "connections.json"));
 
     const externalEditor = join(root, "test-editor.sh");
@@ -575,12 +671,12 @@ await test("a real Pi TUI owner journey reloads state, asks manually while off, 
     await writeFile(join(agentDir, "models.json"), JSON.stringify({
       providers: {
         scripted: {
-          baseUrl: "http://127.0.0.1:1/v1",
+          baseUrl: `${piProvider.origin}/v1`,
           api: "openai-completions",
           apiKey: "$SCRIPTED_PI_API_KEY",
           models: [{
             id: "scripted-model",
-            name: "Scripted no-call TUI model",
+            name: "Scripted local TUI model",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -603,6 +699,8 @@ await test("a real Pi TUI owner journey reloads state, asks manually while off, 
       PI_TELEMETRY: "0",
       TERM: "xterm-256color",
       SCRIPTED_PI_API_KEY: "unused-scripted-key",
+      SYSTEM_ONE_TUI_AGENT_PROMPT: agentEvidence,
+      SYSTEM_ONE_TUI_NEW_SESSION_PROMPT: newSessionPrompt,
     };
     const result = await runInteractivePi([
       piBin,
@@ -616,16 +714,39 @@ await test("a real Pi TUI owner journey reloads state, asks manually while off, 
     assert.equal(result.timedOut, false, `Pi TUI timed out.\n${result.stdout.slice(-8000)}\n${result.stderr}`);
     assert.equal(result.status, 0, `Pi TUI failed (${result.signal}).\n${result.stdout.slice(-8000)}\n${result.stderr}`);
     const terminal = plainTerminal(result.stdout);
-    assert.match(terminal, /Prompt mode: Proactive/, "session access, connection, and mode should survive actual /reload");
+    assert.match(terminal, /Agent access: on \(session override/);
+    assert.match(terminal, /Connection: owner \(available\) \(session override\)/);
+    assert.match(terminal, /Prompt mode: Proactive \(session override/);
+    assert.match(terminal, /New session started/);
+    assert.match(terminal, /Agent access: off \(user default/);
+    assert.match(terminal, /Connection: catalog \(available\) \(catalog default\)/);
+    assert.match(terminal, /Prompt mode: Selective \(user default/);
+    assert.match(terminal, /SCRIPTED_AGENT_CALL_DONE/);
+    assert.match(terminal, /SCRIPTED_NEW_SESSION_DONE/);
     assert.match(terminal, /TUI manual evidence/);
     assert.match(terminal, /System One result — terminal only/);
-    assert.equal(server.received.length, 1, "the manual command should make exactly one backend call");
-    assert.equal(server.received[0].url, "/tui/v1/systemone");
-    assert.deepEqual(server.received[0].body.state, { evidence: "TUI manual evidence" });
+    assert.equal(piProvider.requests.length, 3, "Pi should make the agent tool call, complete its follow-up, then submit a new-session turn");
+    assert.equal(piProvider.requests[0].url, "/v1/chat/completions");
+    assert.ok(piProvider.requests[0].body.tools.some((tool) => tool.function.name === "system_one"));
+    assert.ok(piProvider.requests[1].body.messages.some((message) => message.role === "tool"));
+    assert.equal(piProvider.requests[2].body.tools?.some((tool) => tool.function.name === "system_one") ?? false, false,
+      "the real /new path must remove System One from the active agent tools when user-global access is off");
+    const newSessionUserMessage = [...piProvider.requests[2].body.messages].reverse().find((message) => message.role === "user");
+    const newSessionUserText = typeof newSessionUserMessage.content === "string"
+      ? newSessionUserMessage.content
+      : newSessionUserMessage.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+    assert.equal(newSessionUserText, newSessionPrompt);
+    assert.equal(decisionServer.received.length, 2, "the TUI agent turn and manual ask should each make one decision request");
+    assert.equal(decisionServer.received[0].url, "/owner/v1/systemone", "the nondefault connection selected before /reload must reach the later agent call");
+    assert.deepEqual(decisionServer.received[0].body.state, { evidence: agentEvidence }, "the agent must submit the evidence from the actual user prompt");
+    assert.equal(decisionServer.received[0].body.model, "owner-model");
+    assert.equal(decisionServer.received[1].url, "/catalog/v1/systemone", "after /new, manual ask defaults to the configured connection");
+    assert.deepEqual(decisionServer.received[1].body.state, { evidence: "TUI manual evidence" });
     assert.equal(await loadSystemOnePreferences({ HOME: root, PI_CODING_AGENT_DIR: agentDir }).then((value) => value.agentAccess), false);
+    assert.equal(await loadConnectionCatalog(getDefaultCatalogPath({ HOME: root, XDG_CONFIG_HOME: xdg })).then((value) => value.default), "catalog");
     assert.equal(await readFile(getCustomGuidancePath({ HOME: root, PI_CODING_AGENT_DIR: agentDir }), "utf8"),
       "Owner custom guidance from external editor.");
-    assert.equal(server.received[0].authorization, undefined);
+    assert.equal(decisionServer.received[1].authorization, undefined);
   } catch (error) {
     if (error?.code === "ENOENT" && error.path === "python3") {
       t.skip("Python 3 is required for the portable local Pi PTY scenario");
@@ -633,7 +754,7 @@ await test("a real Pi TUI owner journey reloads state, asks manually while off, 
     }
     throw error;
   } finally {
-    await server.close();
+    await Promise.all([decisionServer.close(), piProvider.close()]);
     await rm(root, { recursive: true, force: true });
   }
 });

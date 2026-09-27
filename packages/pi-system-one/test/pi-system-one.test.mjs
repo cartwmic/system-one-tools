@@ -11,6 +11,7 @@ import {
   writeConnectionCatalog,
 } from "@cartwmic/system-one-connections";
 import {
+  getCustomGuidancePath,
   getSystemOneApi,
   saveCustomGuidance,
   saveSystemOnePreferences,
@@ -362,13 +363,27 @@ await test("Pi loader tool, owner API, branch state, prompt modes, and scripted 
       assert.equal(customManual.connectionId, "owner", "manual evaluation must remain available when Custom guidance is missing");
       assert.equal(fixture.received.length, 3);
 
+      const guidancePath = getCustomGuidancePath(process.env);
+      await mkdir(guidancePath);
+      const unreadablePrompt = await emitPrompt(harness.runner, cwd);
+      assert.match(unreadablePrompt.systemPromptOptions.sections["system-one-agent-usage"], /Custom guidance is unreadable/i);
+      await assert.rejects(
+        tool.execute("unreadable-custom", request, undefined, undefined, harness.runner.createContext()),
+        /Custom mode requires nonempty user-global guidance/i,
+      );
+      assert.equal(fixture.received.length, 3, "unreadable Custom guidance must block agent evaluation before HTTP");
+      const unreadableManual = await api.evaluateManual(request);
+      assert.equal(unreadableManual.connectionId, "owner", "manual evaluation remains available when Custom guidance is unreadable");
+      assert.equal(fixture.received.length, 4);
+      await rm(guidancePath, { recursive: true, force: true });
+
       await saveCustomGuidance("Ask only one explicitly scoped question about supplied evidence.");
       const customPrompt = await emitPrompt(harness.runner, cwd);
       const customSection = customPrompt.systemPromptOptions.sections["system-one-agent-usage"];
       assert.match(customSection, /Ask only one explicitly scoped question/);
       assert.match(customSection, /Do not use System One for factual retrieval/);
       await tool.execute("custom-guidance", request, undefined, undefined, harness.runner.createContext());
-      assert.equal(fixture.received.length, 4);
+      assert.equal(fixture.received.length, 5);
 
       sessionManager.branch(accessEntry.id);
       await harness.runner.emit({ type: "session_tree", newLeafId: accessEntry.id, oldLeafId: null });

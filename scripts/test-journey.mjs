@@ -61,6 +61,10 @@ async function startPiProvider() {
     requests.push({ path: req.url, authorization: req.headers.authorization, body });
     const hasToolResult = body.messages?.some((message) => message.role === "tool");
     const toolIsOffered = body.tools?.some((tool) => tool.function?.name === "system_one") ?? false;
+    const userMessage = [...(body.messages ?? [])].reverse().find((message) => message.role === "user");
+    const userPrompt = typeof userMessage?.content === "string"
+      ? userMessage.content
+      : userMessage?.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n") ?? "";
     const shouldCallTool = toolIsOffered && !hasToolResult;
     const delta = shouldCallTool
       ? {
@@ -71,7 +75,7 @@ async function startPiProvider() {
             function: {
               name: "system_one",
               arguments: JSON.stringify({
-                state: { evidence: "The release note says its required check is failing." },
+                state: { evidence: userPrompt },
                 questions: {
                   release: {
                     type: "choice",
@@ -365,6 +369,7 @@ try {
     PI_TELEMETRY: "0",
     CROSS_CALLER_PI_KEY: "scripted-cross-caller-pi-key",
   };
+  const piPrompt = "The release note says its required check is failing. Use System One to judge whether this release is ready.";
   const request = {
     state: { evidence: "The caller supplied shared-catalog evidence." },
     questions: {
@@ -389,7 +394,7 @@ try {
   assert.equal(received[0].body.model, "shared-model");
   assert.deepEqual(received[0].body.state, request.state);
 
-  const pi = await runPi(runtime.piBin, agentExtensionPath, "Use System One to judge the supplied release evidence.", childEnv);
+  const pi = await runPi(runtime.piBin, agentExtensionPath, piPrompt, childEnv);
   assert.equal(pi.code, 0, `Pi journey failed.\n${pi.stdout}\n${pi.stderr}`);
   assert.match(pi.stdout, /Pi completed the shared-catalog journey/);
   assert.ok(piProvider.requests.length >= 2, "the real Pi turn should complete a tool round-trip");
@@ -398,9 +403,9 @@ try {
   assert.equal(received.length, 2, "the CLI and Pi should each complete one decision evaluation");
   assert.deepEqual(received.map((entry) => entry.path), ["/shared/v1/systemone", "/shared/v1/systemone"]);
   assert.deepEqual(received.map((entry) => entry.body.model), ["shared-model", "shared-model"]);
-  assert.deepEqual(received[1].body.state, {
-    evidence: "The release note says its required check is failing.",
-  });
+  assert.match(piPrompt, /required check is failing/i);
+  assert.deepEqual(received[1].body.state, { evidence: piPrompt },
+    "Pi's decision evidence must come from the actual user prompt, not a scripted-provider fixture");
   assert.equal(received.some((entry) => entry.path.startsWith("/project/")), false,
     "project-local destination settings must not receive either caller's request");
   assert.equal(received[0].authorization, undefined);
