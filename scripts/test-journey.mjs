@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { fixtureEnvironment } from "./scripted-fetch-guard.mjs";
 import { installConsumer, packPackages } from "./package-utils.mjs";
 
 const packageNames = [
@@ -27,6 +28,16 @@ const decisionServer = createServer(async (req, res) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  assert.equal(req.method, "POST");
+  assert.ok(["/api/alpha/decisions", "/api/v1/systemone"].includes(req.url));
+  assert.equal(req.headers.authorization, req.url === "/api/v1/systemone" ? "Bearer dummy-native" : "Bearer dummy-cli");
+  assert.equal(body.model, req.url === "/api/v1/systemone" ? "native-only" : "~typesafe/jev-latest");
+  assert.deepEqual(Object.keys(body).sort(), ["model", "questions", "state"]);
+  assert.deepEqual(Object.keys(body.questions), ["release"]);
+  assert.equal(body.questions.release.type, "choice");
+  assert.deepEqual(Object.keys(body.questions.release.criteria).sort(), ["proceed", "wait"]);
+  assert.deepEqual(Object.keys(body.state), ["evidence"]);
+  assert.equal(typeof body.state.evidence, "string");
   received.push({ path: req.url, authorization: req.headers.authorization, body });
   const answers = {};
   for (const [name, question] of Object.entries(body.questions)) {
@@ -58,8 +69,20 @@ async function startPiProvider() {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/v1/chat/completions");
+    assert.equal(req.headers.authorization, "Bearer scripted-cross-caller-pi-key");
+    assert.equal(body.model, "scripted-model");
     requests.push({ path: req.url, authorization: req.headers.authorization, body });
-    const hasToolResult = body.messages?.some((message) => message.role === "tool");
+    const toolResult = body.messages?.find((message) => message.role === "tool");
+    const hasToolResult = Boolean(toolResult);
+    if (toolResult) {
+      const content = typeof toolResult.content === "string" ? toolResult.content : toolResult.content.map((part) => part.text ?? "").join("\n");
+      const result = JSON.parse(content).result;
+      assert.equal(result.stopReason, "stop");
+      assert.equal(result.answers.release.choice, "wait");
+      assert.deepEqual(result.answers.release.probabilities, { wait: 0.86, proceed: 0.14 });
+    }
     const toolIsOffered = body.tools?.some((tool) => tool.function?.name === "system_one") ?? false;
     const userMessage = [...(body.messages ?? [])].reverse().find((message) => message.role === "user");
     const userPrompt = typeof userMessage?.content === "string"
@@ -89,7 +112,7 @@ async function startPiProvider() {
         }
       : {
           role: "assistant",
-          content: "Pi completed the shared-catalog journey.",
+          content: "Pi completed the independent-native journey.",
         };
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     res.write(`data: ${JSON.stringify({
@@ -123,28 +146,6 @@ async function startPiProvider() {
   };
 }
 
-function scriptedUi({ selects = [], inputs = [] } = {}) {
-  const calls = { selects: [], inputs: [], notifications: [] };
-  return {
-    calls,
-    async select(title, options) {
-      calls.selects.push({ title, options: [...options] });
-      assert.ok(selects.length > 0, `Unexpected /so settings selection: ${title}`);
-      const selected = selects.shift();
-      assert.ok(options.includes(selected), `${selected} is not an option for ${title}: ${options.join(", ")}`);
-      return selected;
-    },
-    async input(title, placeholder) {
-      calls.inputs.push({ title, placeholder });
-      assert.ok(inputs.length > 0, `Unexpected /so settings input: ${title}`);
-      return inputs.shift();
-    },
-    notify(message, type = "info") {
-      calls.notifications.push({ message, type });
-    },
-  };
-}
-
 async function loadPiRuntime() {
   const piBin = execFileSync("which", ["pi"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
   const { realpath } = await import("node:fs/promises");
@@ -157,79 +158,6 @@ async function loadPiRuntime() {
   const { createEventBus } = await import(moduleUrl("dist/core/event-bus.js"));
   const { SessionManager } = await import(moduleUrl("dist/core/session-manager.js"));
   return { ...pi, ...extensions, ...loader, createEventBus, SessionManager, piBin };
-}
-
-async function withUserHome(values, run) {
-  const keys = ["HOME", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"];
-  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  for (const key of keys) {
-    if (values[key] === undefined) delete process.env[key];
-    else process.env[key] = values[key];
-  }
-  try {
-    return await run();
-  } finally {
-    for (const key of keys) {
-      if (original[key] === undefined) delete process.env[key];
-      else process.env[key] = original[key];
-    }
-  }
-}
-
-async function loadOwnerExtensions(runtime, projectPath, extensionPath) {
-  runtime.clearExtensionCache();
-  const eventBus = runtime.createEventBus();
-  const loaded = await runtime.loadExtensions([extensionPath], projectPath, eventBus, runtime.createExtensionRuntime());
-  assert.deepEqual(loaded.errors, [], "Pi's real extension loader should load the integrated packaged entry");
-  const sessionManager = runtime.SessionManager.inMemory(projectPath);
-  const runner = new runtime.ExtensionRunner(loaded.extensions, loaded.runtime, projectPath, sessionManager, {});
-  const activeTools = ["read", "bash", "other_tool"];
-  runner.bindCore({
-    sendMessage() {},
-    sendUserMessage() {},
-    appendEntry: (type, data) => sessionManager.appendCustomEntry(type, data),
-    setSessionName() {},
-    getSessionName: () => undefined,
-    setLabel() {},
-    getActiveTools: () => [...activeTools],
-    getAllTools: () => runner.getAllRegisteredTools().map(({ definition, sourceInfo }) => ({
-      name: definition.name,
-      description: definition.description,
-      parameters: definition.parameters,
-      promptGuidelines: definition.promptGuidelines,
-      sourceInfo,
-    })),
-    setActiveTools: (names) => activeTools.splice(0, activeTools.length, ...names),
-    refreshTools() {},
-    getCommands: () => runner.getRegisteredCommands(),
-    setModel: async () => false,
-    getThinkingLevel: () => "off",
-    setThinkingLevel() {},
-  }, {
-    getModel: () => undefined,
-    getScopedModels: () => [],
-    isIdle: () => true,
-    isProjectTrusted: () => true,
-    getSignal: () => undefined,
-    abort() {},
-    hasPendingMessages: () => false,
-    shutdown() {},
-    getContextUsage: () => undefined,
-    compact() {},
-    getSystemPrompt: () => "",
-    getSystemPromptOptions: () => ({ cwd: projectPath, sections: {} }),
-  });
-  await runner.emit({ type: "session_start", reason: "startup" });
-  return { runner, sessionManager, activeTools };
-}
-
-async function invokeSettings(runner, args, ui) {
-  const command = runner.getRegisteredCommands().find((entry) => entry.name === "so");
-  assert.ok(command, "the packed Pi extension should register /so");
-  assert.equal(runner.getRegisteredCommands().filter((entry) => entry.name === "so").length, 1);
-  const context = Object.create(runner.createContext());
-  Object.defineProperty(context, "ui", { value: ui, configurable: true });
-  await command.handler(args, context);
 }
 
 function runCli(binary, consumer, env, request) {
@@ -261,6 +189,7 @@ function runPi(piBin, extensionPath, prompt, env) {
       "--no-context-files",
       "--provider", "scripted",
       "--model", "scripted-model",
+      "--extension", env.SYSTEM_ONE_NATIVE_EXTENSION,
       "--extension", extensionPath,
       "--approve",
       prompt,
@@ -288,7 +217,6 @@ try {
     "@cartwmic/system-one-cli",
   ]);
   await installConsumer(piConsumer, artifacts, [
-    "@cartwmic/system-one-connections",
     "@cartwmic/pi-system-one",
   ]);
 
@@ -305,39 +233,19 @@ try {
   const runtime = await loadPiRuntime();
   const agentExtensionPath = join(piConsumer, "node_modules/@cartwmic/pi-system-one/src/index.js");
 
-  const userEnv = { HOME: home, XDG_CONFIG_HOME: xdg, PI_CODING_AGENT_DIR: agentDir };
-  await withUserHome(userEnv, async () => {
-    const harness = await loadOwnerExtensions(runtime, project, agentExtensionPath);
-    try {
-      await invokeSettings(harness.runner, "settings", scriptedUi({
-        selects: ["Manage connections", "Create a connection", "OpenRouter Decisions"],
-        inputs: ["owner", `${decisionOrigin}/api/v1`, "~typesafe/jev-latest", ""],
-      }));
-      await invokeSettings(harness.runner, "settings", scriptedUi({
-        selects: ["Manage connections", "Create a connection", "System One"],
-        inputs: ["project", `${decisionOrigin}/project/v1`, "project-model", ""],
-      }));
-      await invokeSettings(harness.runner, "settings", scriptedUi({
-        selects: ["Set catalog default connection", "owner"],
-      }));
-      await invokeSettings(harness.runner, "settings", scriptedUi({
-        selects: ["Set persistent agent defaults", "On", "Proactive"],
-      }));
-    } finally {
-      harness.runner.invalidate("cross-caller journey setup complete");
-    }
-  });
-
   const catalogPath = join(xdg, "system-one/connections.json");
   const preferencesPath = join(agentDir, "system-one/preferences.json");
-  const savedCatalog = JSON.parse(await readFile(catalogPath, "utf8"));
-  const savedPreferences = JSON.parse(await readFile(preferencesPath, "utf8"));
-  assert.equal(savedCatalog.default, "owner", "the actual /so settings flow should save the user-global default");
-  assert.equal(savedCatalog.connections.owner.adapter, "openrouter");
-  assert.equal(savedCatalog.connections.owner.baseURL, `${decisionOrigin}/api/v1`);
-  assert.equal(savedCatalog.connections.project.baseURL, `${decisionOrigin}/project/v1`);
-  assert.deepEqual(savedPreferences, { version: 1, agentAccess: true, defaultMode: "proactive" });
-
+  await mkdir(dirname(catalogPath), { recursive: true });
+  await writeFile(catalogPath, JSON.stringify({ version: 1, default: "owner", connections: {
+    owner: { adapter: "openrouter", baseURL: `${decisionOrigin}/api/v1`, model: "~typesafe/jev-latest", apiKeyEnv: "CLI_FIXTURE_KEY" },
+    project: { baseURL: `${decisionOrigin}/project/v1`, model: "project-model" },
+  } }));
+  const catalogBytes = await readFile(catalogPath, "utf8");
+  await mkdir(dirname(preferencesPath), { recursive: true });
+  await writeFile(preferencesPath, JSON.stringify({ version: 1, agentAccess: true, defaultMode: "proactive", defaultClassifier: { provider: "openrouter", id: "native-only" } }));
+  const nativeExtension = join(root, "native-provider.mjs");
+  await writeFile(nativeExtension, `import { classify } from ${JSON.stringify(pathToFileURL(join(resolve(dirname(await (await import("node:fs/promises")).realpath(runtime.piBin)), "../.."), "node_modules/@earendil-works/pi-ai/dist/api/typesafe-system-one.js")).href)};
+export default pi => pi.registerProvider("openrouter", { classifiers: { "typesafe-system-one": { classify } }, baseUrl: ${JSON.stringify(`${decisionOrigin}/api/v1`)}, apiKey: "dummy-native", models: [{type:"classifier", api:"typesafe-system-one",id:"native-only",name:"Native only",cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}] });`);
   await mkdir(join(project, ".pi"), { recursive: true });
   await writeFile(join(project, ".pi/settings.json"), `${JSON.stringify({
     systemOne: { agentAccess: false, defaultConnection: "project" },
@@ -361,15 +269,18 @@ try {
     },
   }, null, 2)}\n`);
 
-  const childEnv = {
-    ...process.env,
+  const childEnv = fixtureEnvironment(process.env, {
     HOME: home,
     XDG_CONFIG_HOME: xdg,
     PI_CODING_AGENT_DIR: agentDir,
     PI_OFFLINE: "1",
     PI_TELEMETRY: "0",
     CROSS_CALLER_PI_KEY: "scripted-cross-caller-pi-key",
-  };
+    CLI_FIXTURE_KEY: "dummy-cli",
+    SYSTEM_ONE_NATIVE_EXTENSION: nativeExtension,
+    SYSTEM_ONE_FIXTURE_URLS: JSON.stringify([`${decisionOrigin}/api/alpha/decisions`, `${decisionOrigin}/api/v1/systemone`, `${piProvider.origin}/v1/chat/completions`]),
+    NODE_OPTIONS: `--import=${pathToFileURL(resolve("scripts/scripted-fetch-guard.mjs")).href}`,
+  });
   const piPrompt = "The release note says its required check is failing. Use System One to judge whether this release is ready.";
   const request = {
     state: { evidence: "The caller supplied shared-catalog evidence." },
@@ -397,22 +308,30 @@ try {
 
   const pi = await runPi(runtime.piBin, agentExtensionPath, piPrompt, childEnv);
   assert.equal(pi.code, 0, `Pi journey failed.\n${pi.stdout}\n${pi.stderr}`);
-  assert.match(pi.stdout, /Pi completed the shared-catalog journey/);
+  assert.match(pi.stdout, /Pi completed the independent-native journey/);
   assert.ok(piProvider.requests.length >= 2, "the real Pi turn should complete a tool round-trip");
   assert.ok(piProvider.requests[0].body.tools?.some((tool) => tool.function?.name === "system_one"),
     "user-global settings should enable Pi despite the conflicting project-local off setting");
   assert.equal(received.length, 2, "the CLI and Pi should each complete one decision evaluation");
-  assert.deepEqual(received.map((entry) => entry.path), ["/api/alpha/decisions", "/api/alpha/decisions"]);
-  assert.deepEqual(received.map((entry) => entry.body.model), ["~typesafe/jev-latest", "~typesafe/jev-latest"]);
+  assert.deepEqual(received.map((entry) => entry.path), ["/api/alpha/decisions", "/api/v1/systemone"]);
+  assert.deepEqual(received.map((entry) => entry.body.model), ["~typesafe/jev-latest", "native-only"]);
   assert.match(piPrompt, /required check is failing/i);
   assert.deepEqual(received[1].body.state, { evidence: piPrompt },
     "Pi's decision evidence must come from the actual user prompt, not a scripted-provider fixture");
   assert.equal(received.some((entry) => entry.path.startsWith("/project/")), false,
     "project-local destination settings must not receive either caller's request");
-  assert.equal(received[0].authorization, undefined);
-  assert.equal(received[1].authorization, undefined);
+  assert.equal(received[0].authorization, "Bearer dummy-cli");
+  assert.equal(received[1].authorization, "Bearer dummy-native");
 
-  console.log("PASS cross-caller journey: /so settings saved OpenRouter Decisions; packaged CLI and real Pi used the same scripted endpoint");
+  assert.equal(await readFile(catalogPath, "utf8"), catalogBytes, "Pi must not mutate CLI catalog bytes");
+  await rm(catalogPath);
+  const absent = await runPi(runtime.piBin, agentExtensionPath, piPrompt, childEnv);
+  assert.equal(absent.code, 0, absent.stderr);
+  assert.match(absent.stdout, /Pi completed the independent-native journey/);
+  assert.equal(received.length, 3);
+  assert.equal(received[2].path, "/api/v1/systemone");
+  assert.equal(received[2].body.model, "native-only");
+  console.log("PASS independent catalog/default bytes and native Pi with catalog absent");
 } finally {
   if (piProvider) await piProvider.close();
   await new Promise((resolve) => {

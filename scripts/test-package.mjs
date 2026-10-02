@@ -58,7 +58,6 @@ try {
   runProbe("verify-cli-consumer.mjs", cliConsumer, { SYSTEM_ONE_EXPECT_PLATFORM: "darwin" });
 
   await installConsumer(piConsumer, artifacts, [
-    "@cartwmic/system-one-connections",
     "@cartwmic/pi-system-one",
   ]);
   runProbe("verify-pi-consumer.mjs", piConsumer);

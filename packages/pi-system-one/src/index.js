@@ -1,13 +1,8 @@
 import { Type } from "typebox";
 import {
-  createConnectionClient,
-  getDefaultCatalogPath,
-  loadConnectionCatalog,
-  MissingConnectionKeyError,
-} from "@cartwmic/system-one-connections";
-import {
   getCustomGuidancePath,
   isUsageMode,
+  isClassifierSelection,
   loadCustomGuidance,
   loadSystemOnePreferences,
   SYSTEM_ONE_API_CHANNEL,
@@ -22,32 +17,26 @@ export const SYSTEM_ONE_PROMPT_SECTION = "system-one-agent-usage";
 const SESSION_STATE_VERSION = 1;
 const CUSTOM_GUIDANCE_ERROR = "System One agent call blocked: Custom mode requires nonempty user-global guidance. Save Custom guidance or choose another mode.";
 
-const stateSchema = Type.Union([
-  Type.String(),
-  Type.Number(),
-  Type.Boolean(),
-  Type.Array(Type.Unknown()),
-  Type.Record(Type.String(), Type.Unknown()),
-]);
+const stateSchema = Type.Record(Type.String(), Type.Unknown());
 
 const questionSchema = Type.Union([
   Type.Object({
     type: Type.Literal("choice"),
-    instructions: Type.Unknown(),
-    criteria: Type.Record(Type.String(), Type.Unknown(), { minProperties: 1 }),
+    instructions: Type.String(),
+    criteria: Type.Record(Type.String(), Type.String(), { minProperties: 1 }),
   }, { additionalProperties: false }),
   Type.Object({
-    type: Type.Literal("boolean"),
-    instructions: Type.Unknown(),
-    criteria: Type.Optional(Type.Object({
-      true: Type.Optional(Type.Unknown()),
-      false: Type.Optional(Type.Unknown()),
-    }, { additionalProperties: false })),
+    type: Type.Literal("bool"),
+    instructions: Type.String(),
+    criteria: Type.Object({
+      true: Type.String(),
+      false: Type.String(),
+    }, { additionalProperties: false }),
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal("score"),
-    instructions: Type.Unknown(),
-    criteria: Type.Array(Type.Unknown(), { minItems: 1 }),
+    instructions: Type.String(),
+    criteria: Type.Array(Type.String(), { minItems: 1 }),
   }, { additionalProperties: false }),
 ]);
 
@@ -64,7 +53,7 @@ const FIXED_GUIDANCE = [
   "Do not use System One for factual retrieval, exact calculations, vague impressions, open-ended generation, or substantial multi-step reasoning.",
   "Probabilities and confidence are advisory only. They do not authorize, perform, or justify an action.",
   "Construct state and questions from relevant user-provided material or evidence you retrieved. Submit only those explicit fields; never attach conversation history, files, or repository contents automatically.",
-  "The connection and model are owner-controlled. Do not request or invent a destination, URL, connection ID, or model override.",
+  "The classifier is owner-controlled. Do not request or invent a destination, URL, connection ID, or model override.",
 ].join(" ");
 
 const PRESET_GUIDANCE = Object.freeze({
@@ -77,7 +66,7 @@ const TOOL_DESCRIPTION = [
   "Evaluate one explicit, structured Choice, Boolean, or Score question over caller-supplied evidence.",
   "You must construct the state and questions yourself from relevant user material or evidence you retrieved.",
   "Only the provided state and questions are submitted: this tool never reads or attaches conversation history, files, or repository contents automatically.",
-  "The connection and model are owner-selected and cannot be set here. The result is advisory and never authorizes or performs an action.",
+  "The classifier is owner-selected and cannot be set here. The result is advisory and never authorizes or performs an action.",
   "Do not use for factual retrieval, exact calculations, vague impressions, open-ended generation, or substantial multi-step reasoning.",
 ].join(" ");
 
@@ -99,7 +88,7 @@ export default function piSystemOneExtension(pi) {
       version: SESSION_STATE_VERSION,
       overrides: {
         ...(overrides.agentAccess === undefined ? {} : { agentAccess: overrides.agentAccess }),
-        ...(overrides.connectionId === undefined ? {} : { connectionId: overrides.connectionId }),
+        ...(overrides.classifier === undefined ? {} : { classifier: overrides.classifier }),
         ...(overrides.mode === undefined ? {} : { mode: overrides.mode }),
       },
     };
@@ -109,13 +98,13 @@ export default function piSystemOneExtension(pi) {
   function decodeSessionOverrides(data) {
     if (!isPlainObject(data) || data.version !== SESSION_STATE_VERSION || !isPlainObject(data.overrides)) return undefined;
     const input = data.overrides;
-    if (Object.keys(input).some((key) => !["agentAccess", "connectionId", "mode"].includes(key))) return undefined;
+    if (Object.keys(input).some((key) => !["agentAccess", "classifier", "mode"].includes(key))) return undefined;
     if (input.agentAccess !== undefined && typeof input.agentAccess !== "boolean") return undefined;
-    if (input.connectionId !== undefined && (typeof input.connectionId !== "string" || input.connectionId.length === 0)) return undefined;
+    if (input.classifier !== undefined && (!isClassifierSelection(input.classifier))) return undefined;
     if (input.mode !== undefined && !isUsageMode(input.mode)) return undefined;
     return {
       ...(input.agentAccess === undefined ? {} : { agentAccess: input.agentAccess }),
-      ...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
+      ...(input.classifier === undefined ? {} : { classifier: input.classifier }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
     };
   }
@@ -139,29 +128,18 @@ export default function piSystemOneExtension(pi) {
       : current.filter((name) => name !== SYSTEM_ONE_TOOL_NAME));
   }
 
-  async function readCatalog() {
-    return loadConnectionCatalog(getDefaultCatalogPath(process.env));
-  }
-
-  async function status() {
+  async function status(ctx) {
     const preferences = await loadSystemOnePreferences(process.env);
-    let catalog;
-    try {
-      catalog = await readCatalog();
-    } catch {
-      catalog = undefined;
-    }
-    const activeConnectionId = sessionOverrides.connectionId ?? catalog?.default ?? null;
+    const classifier = sessionOverrides.classifier ?? preferences.defaultClassifier ?? null;
+    const available = classifier ? await ctx.modelRegistry.getAvailableOfType("classifier", classifier.provider) : [];
     return Object.freeze({
-      agentAccess: effectiveAccess(preferences),
-      defaultAgentAccess: preferences.agentAccess,
+      agentAccess: effectiveAccess(preferences), defaultAgentAccess: preferences.agentAccess,
       sessionAgentAccess: sessionOverrides.agentAccess ?? null,
-      mode: effectiveMode(preferences),
-      defaultMode: preferences.defaultMode,
+      mode: effectiveMode(preferences), defaultMode: preferences.defaultMode,
       sessionMode: sessionOverrides.mode ?? null,
-      activeConnectionId,
-      sessionConnectionId: sessionOverrides.connectionId ?? null,
-      connectionAvailable: activeConnectionId !== null && catalog !== undefined && Object.hasOwn(catalog.connections, activeConnectionId),
+      classifier, defaultClassifier: preferences.defaultClassifier ?? null,
+      sessionClassifier: sessionOverrides.classifier ?? null,
+      classifierAvailable: classifier !== null && available.some((model) => model.provider === classifier.provider && model.id === classifier.id),
     });
   }
 
@@ -172,16 +150,13 @@ export default function piSystemOneExtension(pi) {
     updateActiveTool(enabled);
   }
 
-  async function setSessionUse(connectionId) {
-    if (connectionId !== undefined && connectionId !== null) {
-      if (typeof connectionId !== "string" || connectionId.length === 0 || connectionId.trim() !== connectionId) {
-        throw new TypeError("Select a configured connection ID.");
-      }
-      const catalog = await readCatalog();
-      if (!Object.hasOwn(catalog.connections, connectionId)) throw new Error("The selected connection is not configured.");
-      sessionOverrides = { ...sessionOverrides, connectionId };
+  async function setSessionUse(classifier, ctx) {
+    if (classifier !== undefined && classifier !== null) {
+      if (!isClassifierSelection(classifier)) throw new TypeError("Select a classifier by provider and id.");
+      if (!ctx.modelRegistry.getModelOfType("classifier", classifier.provider, classifier.id)) throw new Error("The selected classifier is unavailable.");
+      sessionOverrides = { ...sessionOverrides, classifier: { ...classifier } };
     } else {
-      const { connectionId: _cleared, ...remaining } = sessionOverrides;
+      const { classifier: _cleared, ...remaining } = sessionOverrides;
       sessionOverrides = remaining;
     }
     withSessionState();
@@ -201,51 +176,49 @@ export default function piSystemOneExtension(pi) {
   }
 
   function normalizeRequest(value) {
-    if (!isPlainObject(value) || Object.keys(value).some((key) => !["state", "questions"].includes(key))) {
-      throw new TypeError("A System One request must contain only state and questions; destination and action fields are not accepted.");
+    if (!isPlainObject(value) || Object.keys(value).some((key) => !["state", "questions"].includes(key)) ||
+        !isPlainObject(value.state) || !isPlainObject(value.questions) || !Object.keys(value.questions).length) {
+      throw new TypeError("A native request requires object state and named questions only.");
     }
-    if (!Object.hasOwn(value, "state") || !Object.hasOwn(value, "questions") || value.state === null || value.state === undefined) {
-      throw new TypeError("A System One request requires non-null state and questions.");
-    }
-    if (!isPlainObject(value.questions) || Object.keys(value.questions).length === 0) {
-      throw new TypeError("A System One request requires at least one named question.");
+    for (const question of Object.values(value.questions)) {
+      if (!isPlainObject(question) || Object.keys(question).some((key) => !["type", "instructions", "criteria"].includes(key)) || typeof question.instructions !== "string") throw new TypeError("Invalid native question.");
+      const criteria = question.criteria;
+      const valid = question.type === "score"
+        ? Array.isArray(criteria) && criteria.length > 0 && criteria.every((item) => typeof item === "string")
+        : isPlainObject(criteria) && Object.keys(criteria).length > 0 && Object.values(criteria).every((item) => typeof item === "string") &&
+          (question.type === "choice" || (question.type === "bool" && Object.keys(criteria).length === 2 && Object.hasOwn(criteria, "true") && Object.hasOwn(criteria, "false")));
+      if (!valid) throw new TypeError("Invalid native question type or criteria.");
     }
     return { state: value.state, questions: value.questions };
   }
 
-  async function evaluateRequest(requestValue, connectionId, model, signal) {
+  async function evaluateRequest(requestValue, selection, callerSignal, ctx) {
     const request = normalizeRequest(requestValue);
-    let connection;
-    try {
-      const catalog = await readCatalog();
-      const overrides = {
-        ...(connectionId === undefined ? {} : { connectionId }),
-        ...(model === undefined ? {} : { model }),
-      };
-      const connected = createConnectionClient(catalog, overrides);
-      connection = connected.connection;
-      const result = await connected.client.evaluate(request, signal ? { signal } : {});
-      const secret = connection.apiKeyEnv === undefined ? undefined : process.env[connection.apiKeyEnv];
-      const safeResult = secret ? redactCredential(result, secret) : result;
-      return Object.freeze({
-        connectionId: connection.connectionId,
-        model: safeResult.model,
-        result: safeResult,
-      });
-    } catch (error) {
-      throw new Error(safeErrorMessage(error, connection?.apiKeyEnv ? process.env[connection.apiKeyEnv] : undefined));
+    // Start before preference/model resolution and native request-time authentication.
+    const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...(callerSignal ? [callerSignal] : [])]);
+    signal.throwIfAborted();
+    const preferences = await loadSystemOnePreferences(process.env);
+    const classifier = selection ?? sessionOverrides.classifier ?? preferences.defaultClassifier;
+    signal.throwIfAborted();
+    if (!isClassifierSelection(classifier)) throw new Error("No System One classifier selected. Select a provider and id.");
+    const model = ctx.modelRegistry.getModelOfType("classifier", classifier.provider, classifier.id);
+    if (!model) throw new Error("The selected System One classifier is unavailable.");
+    const result = await ctx.modelRegistry.classify(model, request, { signal, maxRetries: 2 });
+    if (result.stopReason !== "stop") {
+      return Object.freeze({ classifier, result: { stopReason: result.stopReason, errorMessage: "Native classifier evaluation failed.", ...(result.usage ? { usage: result.usage } : {}) } });
     }
+    return Object.freeze({ classifier, result });
   }
 
-  async function evaluateManual(request, options = {}) {
-    if (!isPlainObject(options) || Object.keys(options).some((key) => !["connectionId", "model", "signal"].includes(key))) {
-      throw new TypeError("Manual evaluation options may contain only owner-selected connectionId, model, and signal.");
+  async function evaluateManual(request, options = {}, ctx) {
+    if (!isPlainObject(options) || Object.keys(options).some((key) => !["classifier", "signal"].includes(key)) ||
+        (options.classifier !== undefined && !isClassifierSelection(options.classifier))) {
+      throw new TypeError("Manual options accept only owner classifier and signal.");
     }
-    const connectionId = options.connectionId ?? sessionOverrides.connectionId;
-    return evaluateRequest(request, connectionId, options.model, options.signal);
+    return evaluateRequest(request, options.classifier, options.signal, ctx);
   }
 
-  async function evaluateAgent(request, signal) {
+  async function evaluateAgent(request, signal, ctx) {
     const preferences = await loadSystemOnePreferences(process.env);
     if (!effectiveAccess(preferences)) throw new Error("System One agent access is off for this session.");
     const mode = effectiveMode(preferences);
@@ -258,7 +231,7 @@ export default function piSystemOneExtension(pi) {
       }
       if (typeof guidance !== "string" || guidance.trim().length === 0) throw new Error(CUSTOM_GUIDANCE_ERROR);
     }
-    return evaluateRequest(request, sessionOverrides.connectionId, undefined, signal);
+    return evaluateRequest(request, undefined, signal, ctx);
   }
 
   const api = Object.freeze({
@@ -284,10 +257,12 @@ export default function piSystemOneExtension(pi) {
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       try {
-        const result = await evaluateAgent(params, signal ?? ctx.signal);
+        const result = await evaluateAgent(params, signal ?? ctx.signal, ctx);
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           details: result,
+          ...(result.result.usage ? { usage: result.result.usage } : {}),
+          ...(result.result.stopReason !== "stop" ? { isError: true } : {}),
         };
       } catch (error) {
         throw new Error(safeErrorMessage(error));
@@ -314,19 +289,22 @@ export default function piSystemOneExtension(pi) {
 
   pi.on("before_agent_start", async (event) => {
     const preferences = await loadSystemOnePreferences(process.env);
-    updateActiveTool(effectiveAccess(preferences));
     const mode = effectiveMode(preferences);
+    let customUsable = true;
     let usageGuidance = PRESET_GUIDANCE[mode];
     if (mode === "custom") {
       try {
         const custom = await loadCustomGuidance(process.env);
-        usageGuidance = typeof custom === "string" && custom.trim()
+        customUsable = typeof custom === "string" && custom.trim().length > 0;
+        usageGuidance = customUsable
           ? custom.trim()
           : `Custom guidance is missing. Do not call System One until the owner saves guidance or selects another mode (${getCustomGuidancePath(process.env)}).`;
       } catch {
+        customUsable = false;
         usageGuidance = "Custom guidance is unreadable. Do not call System One until the owner saves guidance or selects another mode.";
       }
     }
+    updateActiveTool(effectiveAccess(preferences) && customUsable);
     event.systemPromptOptions.sections[SYSTEM_ONE_PROMPT_SECTION] = [
       `Usage mode: ${mode}.`,
       `Mode guidance: ${usageGuidance}`,
@@ -343,25 +321,9 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function redactCredential(value, secret) {
-  if (typeof value === "string") return value.replaceAll(secret, "[REDACTED]");
-  if (Array.isArray(value)) return value.map((item) => redactCredential(item, secret));
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      key.replaceAll(secret, "[REDACTED]"), redactCredential(item, secret),
-    ]));
-  }
-  return value;
-}
-
-function safeErrorMessage(error, secret) {
-  let message = error instanceof Error ? error.message : "Evaluation failed.";
-  if (error instanceof MissingConnectionKeyError) message = error.message;
-  if (typeof secret === "string" && secret.length > 0) message = message.split(secret).join("[redacted]");
-  message = message
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/(api[_-]?key|token)\s*[:=]\s*\S+/gi, "$1=[redacted]")
-    .replace(/[\r\n\t]/g, " ")
-    .slice(0, 500);
-  return message || "Evaluation failed.";
+function safeErrorMessage(error) {
+  if (error?.name === "AbortError") return "System One evaluation cancelled.";
+  if (error?.name === "TimeoutError") return "System One evaluation exceeded the 30-second deadline.";
+  if (error instanceof TypeError || (error instanceof Error && /^(System One agent|System One evaluation|No System One classifier|The selected System One classifier)/.test(error.message))) return error.message;
+  return "System One evaluation failed; check selection, native provider configuration, or cancellation.";
 }

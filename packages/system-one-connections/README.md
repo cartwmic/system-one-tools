@@ -1,6 +1,6 @@
 # @cartwmic/system-one-connections
 
-Version **0.1.0**. Shared user connection catalog and SDK client composition for the System One CLI and Pi callers. This package owns configuration and SDK wiring only; it contains no CLI or Pi dependency and does not implement a second decision protocol.
+Version **0.1.0**. Shared user connection catalog and SDK client composition for the System One CLI and SDK consumers. Pi uses its own native model registry and does not depend on this package. This package owns configuration and SDK wiring only; it contains no CLI or Pi dependency and does not implement a second decision protocol.
 
 ## Catalog
 

@@ -32,9 +32,6 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build"
   },
-  "dependencies": {
-    "@cartwmic/system-one-connections": "^0.1.0"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"

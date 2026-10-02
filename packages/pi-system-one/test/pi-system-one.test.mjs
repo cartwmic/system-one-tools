@@ -7,10 +7,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import {
-  getDefaultCatalogPath,
-  writeConnectionCatalog,
-} from "@cartwmic/system-one-connections";
-import {
   getCustomGuidancePath,
   getSystemOneApi,
   saveCustomGuidance,
@@ -38,66 +34,6 @@ async function loadPiRuntime() {
 
 const piRuntime = await loadPiRuntime();
 const extensionPath = fileURLToPath(new URL("../src/index.js", import.meta.url));
-const request = {
-  state: { evidence: "The user supplied this short evidence." },
-  questions: {
-    choice: {
-      type: "choice",
-      instructions: "Which option is better supported?",
-      criteria: { yes: "Supported", no: "Not supported" },
-    },
-    boolean: {
-      type: "boolean",
-      instructions: "Is the claim supported?",
-      criteria: { true: "Supported", false: "Not supported" },
-    },
-    score: {
-      type: "score",
-      instructions: "Rate the evidence.",
-      criteria: ["low", "medium", "high"],
-    },
-  },
-};
-
-async function startServer(echoCredential = false) {
-  const received = [];
-  const server = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    received.push({ url: req.url, authorization: req.headers.authorization, body });
-    const answers = {};
-    for (const [name, question] of Object.entries(body.questions)) {
-      if (question.type === "choice") {
-        const choice = Object.keys(question.criteria)[0];
-        answers[name] = { type: "choice", choice, probabilities: { [choice]: 0.8, [Object.keys(question.criteria)[1]]: 0.2 } };
-      } else if (question.type === "noul") {
-        answers[name] = { type: "noul", noul: 0.72 };
-      } else {
-        answers[name] = { type: "score", score: 1, probabilities: { "0": 0.2, "1": 0.6, "2": 0.2 }, legend: { "0": "low", "1": "medium", "2": "high" } };
-      }
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    const credential = req.headers.authorization?.replace(/^Bearer /i, "");
-    res.end(JSON.stringify({
-      model: "scripted-resolved-model",
-      answers,
-      usage: { input_tokens: 21, output_tokens: 8 },
-      ...(echoCredential ? { providerMetadata: { [`echo${credential}`]: credential, nested: [`Bearer ${credential}`] } } : {}),
-    }));
-  });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  return {
-    received,
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
-  };
-}
-
 async function loadHarness(cwd, sessionManager, activeTools = ["read", "bash", "other_tool"], eventBus = piRuntime.createEventBus()) {
   piRuntime.clearExtensionCache();
   const runtime = piRuntime.createExtensionRuntime();
@@ -105,9 +41,10 @@ async function loadHarness(cwd, sessionManager, activeTools = ["read", "bash", "
   assert.deepEqual(loaded.errors, [], "Pi's real extension loader should load the packaged entry");
   const runner = new piRuntime.ExtensionRunner(loaded.extensions, loaded.runtime, cwd, sessionManager, {});
   const active = [...activeTools];
+  const messages = [];
   runner.bindCore({
-    sendMessage() {},
-    sendUserMessage() {},
+    sendMessage: (...args) => { messages.push({ kind: "message", args }); },
+    sendUserMessage: (...args) => { messages.push({ kind: "user", args }); },
     appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
     setSessionName() {},
     getSessionName: () => undefined,
@@ -140,7 +77,7 @@ async function loadHarness(cwd, sessionManager, activeTools = ["read", "bash", "
     getSystemPrompt: () => "",
     getSystemPromptOptions: () => ({ cwd, sections: {} }),
   });
-  return { runner, eventBus, active, loaded };
+  return { runner, eventBus, active, loaded, messages };
 }
 
 async function emitSessionStart(runner, reason) {
@@ -157,7 +94,7 @@ function toolDefinition(runner) {
   return tool;
 }
 
-async function startScriptedPiProvider() {
+async function startScriptedPiProvider(extraQuestions = {}) {
   const requests = [];
   const server = createServer(async (req, res) => {
     const chunks = [];
@@ -175,6 +112,7 @@ async function startScriptedPiProvider() {
         arguments: JSON.stringify({
           state: { evidence: "The project note says release is blocked by a failing check." },
           questions: {
+            ...extraQuestions,
             release: {
               type: "choice",
               instructions: "Which release decision is better supported?",
@@ -221,32 +159,6 @@ function findPiExecutable() {
   return execFileSync(command, ["pi"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
 }
 
-function runPi(args, options) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(findPiExecutable(), args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, options.timeoutMs);
-    child.once("error", reject);
-    child.once("close", (status, signal) => {
-      clearTimeout(timeout);
-      resolve({
-        status,
-        signal,
-        stdout,
-        stderr,
-        error: timedOut ? new Error(`Pi process timed out after ${options.timeoutMs}ms`) : undefined,
-      });
-    });
-  });
-}
-
 async function withAgentEnvironment(values, run) {
   const keys = ["HOME", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR"];
   const old = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -266,345 +178,6 @@ async function withAgentEnvironment(values, run) {
 
 const PREFERENCES = (agentAccess, defaultMode = "selective") => ({ version: 1, agentAccess, defaultMode });
 
-await test("Pi loader tool, owner API, branch state, prompt modes, and scripted evaluation", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pi-system-one-"));
-  const cwd = join(root, "project");
-  const agentDir = join(root, "pi-agent");
-  const configHome = join(root, "xdg");
-  const fixture = await startServer();
-  let harness;
-  try {
-    await mkdir(join(cwd, ".pi"), { recursive: true });
-    await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
-      systemOne: { agentAccess: true, defaultConnection: "project" },
-    }));
-
-    await withAgentEnvironment({ HOME: root, XDG_CONFIG_HOME: configHome, PI_CODING_AGENT_DIR: agentDir }, async () => {
-      await saveSystemOnePreferences(PREFERENCES(false, "selective"));
-      await writeConnectionCatalog({
-        version: 1,
-        default: "owner",
-        connections: {
-          owner: { baseURL: `${fixture.origin}/owner/v1`, model: "owner-model" },
-          project: { baseURL: `${fixture.origin}/project/v1`, model: "project-model" },
-        },
-      }, getDefaultCatalogPath(process.env));
-
-      const sessionManager = piRuntime.SessionManager.inMemory(cwd);
-      harness = await loadHarness(cwd, sessionManager);
-      await emitSessionStart(harness.runner, "startup");
-      assert.deepEqual(harness.active, ["read", "bash", "other_tool"], "default-off must not alter other active tools");
-
-      const tool = toolDefinition(harness.runner);
-      assert.deepEqual(Object.keys(tool.parameters.properties), ["state", "questions"]);
-      assert.equal(tool.parameters.additionalProperties, false);
-      assert.equal("connectionId" in tool.parameters.properties, false);
-      assert.equal("model" in tool.parameters.properties, false);
-      assert.match(tool.description, /never reads or attaches conversation history, files, or repository contents automatically/i);
-      assert.match(tool.description, /factual retrieval, exact calculations, vague impressions, open-ended generation, or substantial multi-step reasoning/i);
-
-      const api = getSystemOneApi({ events: harness.eventBus });
-      let status = await api.getStatus();
-      assert.equal(status.agentAccess, false, "the trusted project-local conflict must not enable the tool");
-      assert.equal(status.activeConnectionId, "owner", "project-local connection settings must not redirect the owner catalog default");
-      assert.equal(status.mode, "selective");
-      const selectivePrompt = await emitPrompt(harness.runner, cwd);
-      assert.match(selectivePrompt.systemPromptOptions.sections["system-one-agent-usage"], /Usage mode: selective/);
-      assert.match(selectivePrompt.systemPromptOptions.sections["system-one-agent-usage"], /genuinely useful to move forward/);
-      assert.equal("baseURL" in status, false);
-      assert.equal("model" in status, false);
-      assert.equal("apiKeyEnv" in status, false);
-      await assert.rejects(
-        tool.execute("disabled", request, undefined, undefined, harness.runner.createContext()),
-        /access is off/i,
-      );
-      assert.equal(fixture.received.length, 0, "the call-time gate must fail before HTTP");
-
-      const manual = await api.evaluateManual(request);
-      assert.equal(manual.connectionId, "owner", "manual evaluation remains available while agent access is off");
-      assert.equal(manual.model, "scripted-resolved-model");
-      assert.equal(fixture.received[0].url, "/owner/v1/systemone");
-      assert.deepEqual(Object.keys(fixture.received[0].body).sort(), ["model", "questions", "state"]);
-
-      await api.setSessionAccess(true);
-      const accessEntry = sessionManager.getBranch().at(-1);
-      await api.setSessionUse("owner");
-      await api.setSessionMode("proactive");
-      assert.deepEqual(harness.active, ["read", "bash", "other_tool", "system_one"], "enabling must preserve every other active tool");
-
-      const prompt = await emitPrompt(harness.runner, cwd);
-      const section = prompt.systemPromptOptions.sections["system-one-agent-usage"];
-      assert.match(section, /Usage mode: proactive/);
-      assert.match(section, /Consider more eligible bounded intermediate judgments/);
-      assert.match(section, /Do not use System One for factual retrieval/);
-
-      const toolResult = await tool.execute("enabled", request, undefined, undefined, harness.runner.createContext());
-      assert.equal(toolResult.details.connectionId, "owner");
-      assert.equal(toolResult.details.model, "scripted-resolved-model");
-      assert.deepEqual(fixture.received[1].body.state, request.state);
-      assert.deepEqual(Object.keys(fixture.received[1].body).sort(), ["model", "questions", "state"]);
-      assert.equal(fixture.received[1].body.model, "owner-model");
-      assert.equal(fixture.received[1].url, "/owner/v1/systemone");
-      assert.deepEqual(fixture.received[1].body.questions.boolean, {
-        type: "noul",
-        instructions: request.questions.boolean.instructions,
-        criteria: request.questions.boolean.criteria,
-      });
-      assert.equal(toolResult.details.result.answers.choice.choice, "yes");
-      assert.deepEqual(toolResult.details.result.answers.boolean, { type: "boolean", probability: 0.72 });
-      assert.equal(toolResult.details.result.answers.score.score, 1);
-
-      await api.setSessionMode("explicit");
-      const explicitPrompt = await emitPrompt(harness.runner, cwd);
-      assert.match(explicitPrompt.systemPromptOptions.sections["system-one-agent-usage"], /only when the user names System One or explicitly tells you/i);
-      await api.setSessionMode("custom");
-      const missingPrompt = await emitPrompt(harness.runner, cwd);
-      assert.match(missingPrompt.systemPromptOptions.sections["system-one-agent-usage"], /Custom guidance is missing/i);
-      await assert.rejects(
-        tool.execute("missing-custom", request, undefined, undefined, harness.runner.createContext()),
-        /Custom mode requires nonempty user-global guidance/i,
-      );
-      assert.equal(fixture.received.length, 2, "missing Custom guidance must block the agent call before HTTP");
-      const customManual = await api.evaluateManual(request);
-      assert.equal(customManual.connectionId, "owner", "manual evaluation must remain available when Custom guidance is missing");
-      assert.equal(fixture.received.length, 3);
-
-      const guidancePath = getCustomGuidancePath(process.env);
-      await mkdir(guidancePath);
-      const unreadablePrompt = await emitPrompt(harness.runner, cwd);
-      assert.match(unreadablePrompt.systemPromptOptions.sections["system-one-agent-usage"], /Custom guidance is unreadable/i);
-      await assert.rejects(
-        tool.execute("unreadable-custom", request, undefined, undefined, harness.runner.createContext()),
-        /Custom mode requires nonempty user-global guidance/i,
-      );
-      assert.equal(fixture.received.length, 3, "unreadable Custom guidance must block agent evaluation before HTTP");
-      const unreadableManual = await api.evaluateManual(request);
-      assert.equal(unreadableManual.connectionId, "owner", "manual evaluation remains available when Custom guidance is unreadable");
-      assert.equal(fixture.received.length, 4);
-      await rm(guidancePath, { recursive: true, force: true });
-
-      await saveCustomGuidance("Ask only one explicitly scoped question about supplied evidence.");
-      const customPrompt = await emitPrompt(harness.runner, cwd);
-      const customSection = customPrompt.systemPromptOptions.sections["system-one-agent-usage"];
-      assert.match(customSection, /Ask only one explicitly scoped question/);
-      assert.match(customSection, /Do not use System One for factual retrieval/);
-      await tool.execute("custom-guidance", request, undefined, undefined, harness.runner.createContext());
-      assert.equal(fixture.received.length, 5);
-
-      sessionManager.branch(accessEntry.id);
-      await harness.runner.emit({ type: "session_tree", newLeafId: accessEntry.id, oldLeafId: null });
-      status = await api.getStatus();
-      assert.equal(status.agentAccess, true);
-      assert.equal(status.sessionConnectionId, null, "branch restoration must follow only the selected branch");
-      assert.equal(status.mode, "selective");
-
-      await api.setSessionUse("owner");
-      await api.setSessionMode("custom");
-      harness.runner.invalidate("test reload");
-      harness = await loadHarness(cwd, sessionManager, harness.active);
-      await emitSessionStart(harness.runner, "reload");
-      const reloadedApi = getSystemOneApi({ events: harness.eventBus });
-      status = await reloadedApi.getStatus();
-      assert.equal(status.agentAccess, true);
-      assert.equal(status.activeConnectionId, "owner");
-      assert.equal(status.mode, "custom");
-      assert.ok(harness.active.includes("system_one"));
-      const reloadedPrompt = await emitPrompt(harness.runner, cwd);
-      assert.match(reloadedPrompt.systemPromptOptions.sections["system-one-agent-usage"], /Ask only one explicitly scoped question/);
-
-      await emitSessionStart(harness.runner, "new");
-      status = await reloadedApi.getStatus();
-      assert.equal(status.agentAccess, false, "new session must return to the user-global off preference");
-      assert.equal(status.mode, "selective");
-      assert.equal(status.activeConnectionId, "owner");
-      assert.equal(status.sessionAgentAccess, null);
-      assert.equal(status.sessionConnectionId, null);
-      assert.equal(status.sessionMode, null);
-      assert.deepEqual(harness.active, ["read", "bash", "other_tool"], "disabling must leave other active tools unchanged");
-      await emitSessionStart(harness.runner, "reload");
-      status = await reloadedApi.getStatus();
-      assert.equal(status.agentAccess, false, "the new-session reset marker must survive reload");
-
-      const directOverride = await reloadedApi.evaluateManual(request, { connectionId: "project", model: "one-call-model" });
-      assert.equal(directOverride.connectionId, "project");
-      assert.equal(fixture.received.at(-1).url, "/project/v1/systemone");
-      assert.equal(fixture.received.at(-1).body.model, "one-call-model");
-      assert.equal((await reloadedApi.getStatus()).activeConnectionId, "owner", "manual one-call overrides must not alter the session connection");
-    });
-  } finally {
-    harness?.runner.invalidate("test finished");
-    await fixture.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-await test("Pi manual and agent successes redact provider-echoed credentials", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pi-system-one-redaction-"));
-  const cwd = join(root, "project");
-  const agentDir = join(root, "pi-agent");
-  const configHome = join(root, "xdg");
-  const fixture = await startServer(true);
-  const keyName = "SYSTEM_ONE_PI_RESULT_TEST_KEY";
-  const secret = "pi-synthetic-secret-must-not-print";
-  const previousKey = process.env[keyName];
-  let harness;
-  try {
-    process.env[keyName] = secret;
-    await mkdir(cwd, { recursive: true });
-    await withAgentEnvironment({ HOME: root, XDG_CONFIG_HOME: configHome, PI_CODING_AGENT_DIR: agentDir }, async () => {
-      await saveSystemOnePreferences(PREFERENCES(true));
-      await writeConnectionCatalog({
-        version: 1,
-        default: "owner",
-        connections: { owner: { baseURL: `${fixture.origin}/v1`, model: "model", apiKeyEnv: keyName } },
-      }, getDefaultCatalogPath(process.env));
-      harness = await loadHarness(cwd, piRuntime.SessionManager.inMemory(cwd));
-      await emitSessionStart(harness.runner, "startup");
-      const api = getSystemOneApi({ events: harness.eventBus });
-      const manual = await api.evaluateManual(request);
-      assert.equal(manual.result.providerMetadata["echo[REDACTED]"], "[REDACTED]");
-      assert.deepEqual(manual.result.providerMetadata.nested, ["Bearer [REDACTED]"]);
-
-      const toolResult = await toolDefinition(harness.runner).execute("redacted", request, undefined, undefined, harness.runner.createContext());
-      assert.equal(toolResult.details.result.providerMetadata["echo[REDACTED]"], "[REDACTED]");
-      assert.equal(toolResult.content[0].text.includes(secret), false);
-      assert.equal(JSON.stringify(toolResult.details).includes(secret), false);
-      assert.deepEqual(fixture.received.map((entry) => entry.authorization), [`Bearer ${secret}`, `Bearer ${secret}`]);
-    });
-  } finally {
-    if (previousKey === undefined) delete process.env[keyName];
-    else process.env[keyName] = previousKey;
-    harness?.runner.invalidate("test finished");
-    await fixture.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-await test("a real Pi agent turn calls the loaded tool and reaches the scripted decision backend", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pi-system-one-agent-journey-"));
-  const cwd = join(root, "project");
-  const agentDir = join(root, "pi-agent");
-  const configHome = join(root, "xdg");
-  const decisionServer = await startServer(true);
-  const piProvider = await startScriptedPiProvider();
-  const decisionKey = "pi-scripted-secret-must-not-print";
-  try {
-    await mkdir(join(cwd, ".pi"), { recursive: true });
-    await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
-      systemOne: { agentAccess: false, defaultConnection: "project" },
-    }));
-    const userEnv = { HOME: root, XDG_CONFIG_HOME: configHome, PI_CODING_AGENT_DIR: agentDir };
-    await saveSystemOnePreferences(PREFERENCES(true, "proactive"), userEnv);
-    await writeConnectionCatalog({
-      version: 1,
-      default: "owner",
-      connections: {
-        owner: { adapter: "openrouter", baseURL: `${decisionServer.origin}/api/v1`, model: "~typesafe/jev-latest", apiKeyEnv: "SYSTEM_ONE_PI_DECISION_KEY" },
-        project: { baseURL: `${decisionServer.origin}/project/v1`, model: "project-decision-model" },
-      },
-    }, getDefaultCatalogPath(userEnv));
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(join(agentDir, "models.json"), JSON.stringify({
-      providers: {
-        scripted: {
-          baseUrl: `${piProvider.origin}/v1`,
-          api: "openai-completions",
-          apiKey: "$SCRIPTED_PI_API_KEY",
-          models: [{
-            id: "scripted-model",
-            name: "Scripted agent test model",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 8192,
-            maxTokens: 1024,
-          }],
-        },
-      },
-    }));
-
-    const result = await runPi([
-      "--print",
-      "--no-session",
-      "--provider", "scripted",
-      "--model", "scripted-model",
-      "--extension", extensionPath,
-      "--approve",
-      "Use System One to judge the supplied release evidence.",
-    ], {
-      cwd,
-      timeoutMs: 30_000,
-      env: {
-        ...process.env,
-        ...userEnv,
-        PI_OFFLINE: "1",
-        PI_TELEMETRY: "0",
-        SCRIPTED_PI_API_KEY: "scripted-pi-api-key",
-        SYSTEM_ONE_PI_DECISION_KEY: decisionKey,
-      },
-    });
-
-    assert.equal(result.error, undefined, `${result.error?.message ?? ""}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.equal(result.status, 0, `Pi agent turn should finish. stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-    assert.match(result.stdout, /scripted judgment supports waiting/i);
-    assert.ok(piProvider.requests.length >= 2, "the Pi agent should complete a tool round-trip");
-    const toolRequest = piProvider.requests[0];
-    assert.equal(toolRequest.url, "/v1/chat/completions");
-    assert.equal(toolRequest.authorization, "Bearer scripted-pi-api-key");
-    const offeredTool = toolRequest.body.tools?.find((tool) => tool.function?.name === "system_one");
-    assert.ok(offeredTool, "the user-global default-on preference should expose the tool despite project settings");
-    assert.deepEqual(Object.keys(offeredTool.function.parameters.properties), ["state", "questions"]);
-    assert.match(JSON.stringify(toolRequest.body.messages), /Consider more eligible bounded intermediate judgments/);
-
-    assert.equal(decisionServer.received.length, 1, "the actual Pi agent tool call should finish through the scripted decision server");
-    const decision = decisionServer.received[0];
-    assert.equal(decision.url, "/api/alpha/decisions", "project-local settings must not redirect the owner catalog default");
-    assert.equal(decision.authorization, `Bearer ${decisionKey}`);
-    const followupMessages = JSON.stringify(piProvider.requests[1].body.messages);
-    assert.equal(followupMessages.includes(decisionKey), false, "the agent's next turn must not receive an echoed credential");
-    assert.match(followupMessages, /\[REDACTED\]/, "the agent must receive the sanitized decision result");
-    assert.deepEqual(Object.keys(decision.body).sort(), ["model", "questions", "state"]);
-    assert.equal(decision.body.model, "~typesafe/jev-latest");
-    assert.deepEqual(decision.body.state, { evidence: "The project note says release is blocked by a failing check." });
-    assert.equal("conversation" in decision.body, false);
-    assert.equal("history" in decision.body, false);
-    assert.equal("files" in decision.body, false);
-
-    await saveSystemOnePreferences(PREFERENCES(false, "selective"), userEnv);
-    await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({
-      systemOne: { agentAccess: true, defaultConnection: "project" },
-    }));
-    const offResult = await runPi([
-      "--print",
-      "--no-session",
-      "--provider", "scripted",
-      "--model", "scripted-model",
-      "--extension", extensionPath,
-      "--approve",
-      "Summarize the supplied release note.",
-    ], {
-      cwd,
-      timeoutMs: 30_000,
-      env: {
-        ...process.env,
-        ...userEnv,
-        PI_OFFLINE: "1",
-        PI_TELEMETRY: "0",
-        SCRIPTED_PI_API_KEY: "scripted-pi-api-key",
-      },
-    });
-    assert.equal(offResult.error, undefined, `${offResult.error?.message ?? ""}\nstdout:\n${offResult.stdout}\nstderr:\n${offResult.stderr}`);
-    assert.equal(offResult.status, 0, `default-off Pi turn should finish. stdout:\n${offResult.stdout}\nstderr:\n${offResult.stderr}`);
-    assert.match(offResult.stdout, /without invoking System One/i);
-    assert.equal(piProvider.requests.at(-1).body.tools?.some((tool) => tool.function?.name === "system_one"), false,
-      "a trusted project-local setting cannot enable the agent tool when the user-global default is off");
-    assert.equal(decisionServer.received.length, 1, "the disabled real Pi turn must not reach the decision backend");
-  } finally {
-    await Promise.all([decisionServer.close(), piProvider.close()]);
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 await test("user-global default-on and default prompt mode are applied by the real Pi loader", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-system-one-default-on-"));
   const cwd = join(root, "project");
@@ -617,7 +190,7 @@ await test("user-global default-on and default prompt mode are applied by the re
       const sessionManager = piRuntime.SessionManager.inMemory(cwd);
       harness = await loadHarness(cwd, sessionManager);
       await emitSessionStart(harness.runner, "startup");
-      const status = await getSystemOneApi({ events: harness.eventBus }).getStatus();
+      const status = await getSystemOneApi({ events: harness.eventBus }).getStatus(harness.runner.createContext());
       assert.equal(status.agentAccess, true);
       assert.equal(status.defaultAgentAccess, true);
       assert.equal(status.mode, "proactive");
@@ -630,4 +203,305 @@ await test("user-global default-on and default prompt mode are applied by the re
     harness?.runner.invalidate("test finished");
     await rm(root, { recursive: true, force: true });
   }
+});
+
+await test("native preferences and branch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "so-native-prefs-"));
+  try {
+    await withAgentEnvironment({ HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") }, async () => {
+      const selection = { provider: "typesafe", id: "jev-latest" };
+      await saveSystemOnePreferences({ ...PREFERENCES(true, "custom"), defaultClassifier: selection });
+      const manager = piRuntime.SessionManager.inMemory(root);
+      const harness = await loadHarness(root, manager);
+      const ctx = { modelRegistry: {
+        getModelOfType: (_type, provider, id) => ({ provider, id }),
+        getAvailableOfType: async () => [{ ...selection }],
+      } };
+      try {
+        await emitSessionStart(harness.runner, "startup");
+        const api = getSystemOneApi({ events: harness.eventBus });
+        assert.deepEqual((await api.getStatus(ctx)).classifier, selection);
+        await api.setSessionUse({ provider: "other", id: "explicit" }, ctx);
+        await emitSessionStart(harness.runner, "reload");
+        assert.equal((await api.getStatus(ctx)).sessionClassifier.id, "explicit");
+        assert.equal((await api.getStatus(ctx)).classifierAvailable, false);
+        await emitSessionStart(harness.runner, "new");
+        assert.equal((await api.getStatus(ctx)).sessionClassifier, null);
+        const request = { state: { text: "blue" }, questions: { color: { type: "bool", instructions: "Blue?", criteria: { true: "blue", false: "not blue" } } } };
+        await api.setSessionAccess(false);
+        let calls = 0;
+        const freshCtx = { modelRegistry: {
+          getModelOfType: () => ({ provider: "fresh", id: "fresh" }),
+          classify: async (_model, received, options) => {
+            calls++;
+            assert.deepEqual(received, request);
+            assert.equal(options.maxRetries, 2);
+            assert.ok(options.signal instanceof AbortSignal);
+            return { stopReason: "aborted", answers: { mustNotLeak: {} }, usage: { totalTokens: 9 } };
+          },
+        } };
+        await assert.rejects(toolDefinition(harness.runner).execute("off", request, undefined, undefined, freshCtx), /agent access is off/);
+        const manual = await api.evaluateManual(request, {}, freshCtx);
+        assert.equal(calls, 1, "manual uses the current per-call registry even with agent access off");
+        assert.equal(manual.result.stopReason, "aborted");
+        assert.equal(manual.result.answers, undefined);
+        assert.equal(manual.result.usage.totalTokens, 9);
+        await assert.rejects(api.evaluateManual(request, {}, { modelRegistry: { getModelOfType: () => undefined } }), /unavailable/);
+        await saveSystemOnePreferences(PREFERENCES(false, "selective"));
+        await assert.rejects(api.evaluateManual(request, {}, freshCtx), /No System One classifier/);
+        await saveSystemOnePreferences({ ...PREFERENCES(true, "custom"), defaultClassifier: selection });
+        await api.setSessionAccess(true);
+        await assert.rejects(toolDefinition(harness.runner).execute("custom", request, undefined, undefined, freshCtx), /Custom mode requires/);
+        await api.setSessionUse(selection, ctx);
+        await api.restoreDefaults();
+        assert.equal((await api.getStatus(ctx)).sessionClassifier, null);
+        await assert.rejects(api.evaluateManual({ state: "old", questions: {} }, {}, ctx), /object state/);
+        await assert.rejects(api.evaluateManual({ state: {}, questions: { x: { type: "boolean", instructions: "x" } } }, {}, ctx), /Invalid native/);
+        await assert.rejects(api.evaluateManual({ state: {}, questions: {} }, { model: "agent" }, ctx), /owner classifier/);
+      } finally { harness.runner.invalidate("test finished"); }
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+await test("native classifier agent contract", async () => {
+  const root = await mkdtemp(join(tmpdir(), "so-native-agent-"));
+  const chat = await startScriptedPiProvider({
+    blue: { type: "bool", instructions: "Is blue supported?", criteria: { true: "blue", false: "not blue" } },
+    strength: { type: "score", instructions: "Rate strength", criteria: ["low", "medium", "high"] },
+  });
+  const requests = [];
+  let behavior = "success";
+  let attempt = 0;
+  const native = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    assert.equal(req.headers.authorization, "Bearer dummy-native");
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/api/v1/systemone");
+    assert.deepEqual(Object.keys(body).sort(), ["model", "questions", "state"]);
+    assert.equal(body.model, "classifier-only");
+    assert.deepEqual(Object.keys(body.questions).sort(), ["blue", "release", "strength"]);
+    assert.equal(body.questions.blue.type, "noul");
+    assert.equal(body.questions.strength.type, "score");
+    requests.push({ url: req.url, body, time: Date.now() });
+    attempt++;
+    if (behavior === "auth" || behavior === "terminal" || (behavior === "transient" && attempt < 3)) {
+      res.writeHead(behavior === "auth" ? 401 : 503, { "content-type": "application/json", "retry-after": "0" });
+      res.end(JSON.stringify({ error: "scripted refusal" }));
+      return;
+    }
+    if (behavior === "body-delay") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"answers":');
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ answers: behavior === "protocol" ? {} : { blue: { type: "noul", noul: 0.85 }, strength: { type: "score", score: 2, confidence: 0.8 }, release: { type: "choice", choice: "wait", probabilities: { wait: 0.9, proceed: 0.1 }, confidence: 0.9 } }, usage: { input_tokens: 17, output_tokens: 3 } }));
+  });
+  await new Promise((resolve) => native.listen(0, "127.0.0.1", resolve));
+  const agentDir = join(root, "agent");
+  const env = { ...process.env, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_TELEMETRY: "0", NATIVE_TEST_KEY: "dummy-native" };
+  try {
+    await mkdir(agentDir, { recursive: true });
+    await saveSystemOnePreferences({ ...PREFERENCES(true, "selective"), defaultClassifier: { provider: "openrouter", id: "classifier-only" } }, env);
+    await writeFile(join(agentDir, "models.json"), JSON.stringify({ providers: {
+      scripted: { baseUrl: `${chat.origin}/api/v1`, api: "openai-completions", apiKey: "dummy-chat", models: [{ id: "chat-only", name: "Chat only", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 }] },
+      "openrouter": { baseUrl: `http://127.0.0.1:${native.address().port}/api/v1`, api: "typesafe-system-one", apiKey: "$NATIVE_TEST_KEY", models: [{ type: "classifier", id: "classifier-only", name: "Native only", cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } }] },
+    } }));
+    const nativeExtension = join(root, "native-provider.mjs");
+    await writeFile(nativeExtension, `import { classify } from ${JSON.stringify(pathToFileURL(join(process.env.PI_CODING_AGENT_PACKAGE_ROOT || resolve(dirname(await realpath(findPiExecutable())), "../.."), "node_modules/@earendil-works/pi-ai/dist/api/typesafe-system-one.js")).href)}; const originalFetch = globalThis.fetch; globalThis.fetch = (input, options) => { const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url); if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error("Scripted proof refuses non-loopback transport"); return originalFetch(input, options); }; export default function(pi) { pi.registerProvider("openrouter", { classifiers: { "typesafe-system-one": { classify } }, ...${JSON.stringify({ baseUrl: `http://127.0.0.1:${native.address().port}/api/v1`, api: "typesafe-system-one", apiKey: "$NATIVE_TEST_KEY", models: [{ type: "classifier", api: "typesafe-system-one", id: "classifier-only", name: "Native only", cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } }] })}}); }`);
+    async function turn() {
+      const child = spawn(findPiExecutable(), ["--mode", "rpc", "--no-session", "--provider", "scripted", "--model", "chat-only", "--extension", nativeExtension, "--extension", extensionPath, "--approve"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+      let stderr = "", buffer = "";
+      const events = [];
+      let finish, fail;
+      const done = new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+      const timeout = setTimeout(() => fail(new Error(`RPC timed out: ${stderr}`)), 45_000);
+      child.stderr.on("data", (data) => { stderr += data; });
+      child.on("error", fail);
+      child.on("exit", (code) => { if (code) fail(new Error(stderr)); });
+      child.stdout.on("data", (data) => {
+        buffer += data;
+        while (buffer.includes("\n")) {
+          const index = buffer.indexOf("\n");
+          const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+          if (!line.trim()) continue;
+          let event; try { event = JSON.parse(line); } catch { continue; }
+          events.push(event);
+          if (event.type === "agent_end") child.stdin.write(JSON.stringify({ id: "stats", type: "get_session_stats" }) + "\n");
+          if (event.id === "stats") finish(event);
+        }
+      });
+      child.stdin.write(JSON.stringify({ id: "prompt", type: "prompt", message: "Judge the release evidence using System One." }) + "\n");
+      try { const stats = await done; return { stats, events }; }
+      finally { clearTimeout(timeout); child.kill(); await new Promise((resolve) => child.once("close", resolve)); }
+    }
+    const success = await turn();
+    assert.equal(success.stats.success, true);
+    assert.equal(success.stats.data.tokens.total, 20, `native usage must enter actual Pi totals: ${JSON.stringify(success.events.filter(e => e.type === "tool_execution_end" || (e.type === "message_end" && e.message?.role === "assistant")))} requests=${JSON.stringify(requests)}`);
+    assert.equal(success.stats.data.toolResults, 1);
+    assert.ok(Math.abs(success.stats.data.cost - 0.000023) < 1e-12, "native catalog pricing enters actual Pi cost totals");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/api/v1/systemone");
+    assert.equal(requests[0].body.model, "classifier-only");
+    assert.deepEqual(Object.keys(requests[0].body).sort(), ["model", "questions", "state"]);
+    assert.equal(JSON.parse(chat.requests.at(-1).body.messages.find(m => m.role === "tool").content).result.answers.release.choice, "wait");
+    assert.match(JSON.stringify(success.events), /scripted judgment supports waiting/);
+    behavior = "protocol"; attempt = 0;
+    const failure = await turn();
+    assert.equal(failure.stats.data.tokens.total, 20, "billed protocol failure usage must also enter actual totals");
+    const followup = JSON.stringify(chat.requests.at(-1).body.messages);
+    assert.match(followup, /Native classifier evaluation failed/);
+    assert.equal(JSON.parse(chat.requests.at(-1).body.messages.find(m => m.role === "tool").content).result.answers, undefined);
+    assert.equal(requests.length, 2, "protocol errors must not be retried by the extension");
+    const successfulAnswers = JSON.parse(chat.requests[1].body.messages.find(m => m.role === "tool").content).result.answers;
+    assert.equal(successfulAnswers.blue.type, "bool");
+    assert.equal(successfulAnswers.blue.probability, 0.85);
+    assert.equal(successfulAnswers.strength.score, 2);
+    for (const [mode, expected, usable] of [["transient", 3, true], ["terminal", 3, false], ["auth", 1, false], ["body-delay", 1, false]]) {
+      behavior = mode; attempt = 0;
+      const before = requests.length;
+      const started = Date.now();
+      const outcome = await turn();
+      const elapsed = Date.now() - started;
+      assert.equal(outcome.stats.success, true, `${mode} must finish an actual agent turn`);
+      assert.equal(requests.length - before, expected, `${mode} per-operation attempt count`);
+      const payload = JSON.parse(chat.requests.at(-1).body.messages.find(m => m.role === "tool").content);
+      assert.equal(Boolean(payload.result?.answers), usable, `${mode} failed answers unusable`);
+      if (mode === "body-delay") assert.ok(elapsed >= 29_000 && elapsed < 40_000, `single deadline including response body: ${elapsed}ms`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(requests.length - before, expected, `${mode} no post-terminal transport`);
+      console.log(JSON.stringify({ nativeCase: mode, attempts: expected, elapsedMs: elapsed, completed: true }));
+    }
+    const beforeMissingAuth = requests.length;
+    delete env.NATIVE_TEST_KEY;
+    const unauthenticated = await turn();
+    assert.equal(unauthenticated.stats.data.tokens.total, 0);
+    assert.equal(requests.length, beforeMissingAuth, "missing native auth must refuse before transport");
+    assert.match(JSON.stringify(chat.requests.at(-1).body.messages), /Native classifier evaluation failed/);
+  } finally {
+    await Promise.all([chat.close(), new Promise((resolve) => { native.close(resolve); native.closeAllConnections(); })]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await test("native controller lifecycle modes validation and accounting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-controller-migration-"));
+  try {
+    await withAgentEnvironment({ HOME: root, PI_CODING_AGENT_DIR: join(root, "agent") }, async () => {
+      const first = { provider: "native", id: "first" };
+      const second = { provider: "native", id: "second" };
+      await saveSystemOnePreferences({ ...PREFERENCES(false), defaultClassifier: first });
+      const manager = piRuntime.SessionManager.inMemory(root);
+      const harness = await loadHarness(root, manager);
+      const api = getSystemOneApi({ events: harness.eventBus });
+      const calls = [];
+      let result = { stopReason: "stop", answers: { x: { type: "bool", probability: 0.8 } }, usage: { input: 2, output: 1, totalTokens: 3, cost: { total: 0.01 } } };
+      const ctx = { modelRegistry: {
+        getModelOfType: (type, provider, id) => {
+          assert.equal(type, "classifier");
+          return [first, second].find((model) => model.provider === provider && model.id === id);
+        },
+        getAvailableOfType: async () => [first, second],
+        classify: async (model, request, options) => { calls.push({ model, request, options }); return result; },
+      } };
+      const request = { state: { evidence: "blue" }, questions: { x: { type: "bool", instructions: "Blue?", criteria: { true: "blue", false: "not blue" } } } };
+      const tool = toolDefinition(harness.runner);
+      try {
+        await emitSessionStart(harness.runner, "startup");
+        assert.deepEqual(Object.keys(tool.parameters.properties), ["state", "questions"]);
+        assert.equal(tool.parameters.additionalProperties, false);
+        await api.setSessionUse(second, ctx);
+        await api.setSessionAccess(true);
+        await api.setSessionMode("explicit");
+        for (const reason of ["reload", "resume"]) {
+          await emitSessionStart(harness.runner, reason);
+          const status = await api.getStatus(ctx);
+          assert.deepEqual(status.classifier, second);
+          assert.equal(status.agentAccess, true);
+          assert.equal(status.mode, "explicit");
+        }
+        const selectedEntry = manager.getLeafId();
+        await api.setSessionUse(first, ctx);
+        await api.setSessionAccess(false);
+        manager.branch(selectedEntry);
+        await harness.runner.emit({ type: "session_tree" });
+        assert.deepEqual((await api.getStatus(ctx)).classifier, second);
+        assert.equal((await api.getStatus(ctx)).agentAccess, true);
+        for (const [mode, wording] of [["explicit", /only when the user names/], ["selective", /bounded intermediate judgment/], ["proactive", /more eligible bounded/]]) {
+          await api.setSessionMode(mode);
+          const prompt = (await emitPrompt(harness.runner, root)).systemPromptOptions.sections["system-one-agent-usage"];
+          assert.match(prompt, wording);
+          assert.match(prompt, /never attach conversation history/);
+          assert.match(prompt, /do not authorize, perform, or justify an action/);
+          assert.match(prompt, /factual retrieval, exact calculations/);
+        }
+        await api.setSessionMode("custom");
+        for (const preparation of [async () => {}, async () => saveCustomGuidance("  "), async () => {
+          await rm(getCustomGuidancePath(), { force: true });
+          await mkdir(getCustomGuidancePath(), { recursive: true });
+        }]) {
+          await preparation();
+          await emitPrompt(harness.runner, root);
+          assert.equal(harness.active.includes("system_one"), false, "blocked Custom hides the active offer");
+          await assert.rejects(tool.execute("custom", request, undefined, undefined, ctx), /Custom mode requires/);
+        }
+        assert.equal(calls.length, 0);
+        await rm(getCustomGuidancePath(), { recursive: true });
+        await saveCustomGuidance("Owner custom instruction");
+        const prompt = (await emitPrompt(harness.runner, root)).systemPromptOptions.sections["system-one-agent-usage"];
+        assert.equal(harness.active.includes("system_one"), true, "valid Custom restores the active offer on the next turn");
+        assert.match(prompt, /Owner custom instruction/);
+        assert.match(prompt, /Fixed boundary:/);
+        const success = await tool.execute("success", request, undefined, undefined, ctx);
+        assert.deepEqual(success.usage, result.usage);
+        assert.deepEqual(success.details.result.answers, result.answers);
+        assert.deepEqual(calls[0].model, second);
+        assert.deepEqual(calls[0].request, request);
+        assert.equal(calls[0].options.maxRetries, 2);
+        assert.ok(calls[0].options.signal instanceof AbortSignal);
+        result = { stopReason: "error", answers: { secret: "not usable" }, errorMessage: "provider private error", usage: result.usage };
+        const failure = await tool.execute("billed-error", request, undefined, undefined, ctx);
+        assert.equal(failure.isError, true);
+        assert.deepEqual(failure.usage, result.usage);
+        assert.equal(failure.details.result.answers, undefined);
+        assert.doesNotMatch(JSON.stringify(failure), /not usable|provider private error/);
+        const before = JSON.stringify(manager.getBranch());
+        await api.evaluateManual(request, { classifier: first }, ctx);
+        assert.deepEqual(calls.at(-1).model, first);
+        assert.equal(JSON.stringify(manager.getBranch()), before);
+        assert.deepEqual(harness.messages, []);
+        assert.deepEqual((await api.getStatus(ctx)).classifier, second);
+        const count = calls.length;
+        for (const invalid of [
+          { ...request, model: "agent-selected" }, { ...request, state: "legacy" },
+          { ...request, questions: {} },
+          { ...request, questions: { x: { ...request.questions.x, type: "boolean" } } },
+          { ...request, questions: { x: { ...request.questions.x, criteria: { true: "yes" } } } },
+          { ...request, questions: { x: { ...request.questions.x, extra: true } } },
+        ]) await assert.rejects(api.evaluateManual(invalid, {}, ctx), TypeError);
+        const cancelled = new AbortController(); cancelled.abort();
+        await assert.rejects(api.evaluateManual(request, { signal: cancelled.signal }, ctx), { name: "AbortError" });
+        assert.equal(calls.length, count);
+        await assert.rejects(api.setSessionUse("old-catalog-id", ctx), /provider and id/);
+        await assert.rejects(api.setSessionUse({ provider: "missing", id: "missing" }, ctx), /unavailable/);
+        await api.restoreDefaults();
+        assert.equal((await api.getStatus(ctx)).sessionAgentAccess, null);
+        assert.deepEqual((await api.getStatus(ctx)).classifier, first);
+        assert.deepEqual(harness.active, ["read", "bash", "other_tool"]);
+        await api.setSessionUse(second, ctx);
+        await emitSessionStart(harness.runner, "new");
+        assert.deepEqual((await api.getStatus(ctx)).classifier, first);
+        assert.equal((await api.getStatus(ctx)).sessionMode, null);
+      } finally { harness.runner.invalidate("test finished"); }
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+await test("native caller bounds", { timeout: 240_000 }, async () => {
+  const { nativeCallerBounds } = await import("../../../scripts/native-caller-bounds.mjs");
+  const proof = await nativeCallerBounds();
+  assert.equal(proof.outcomes.length, 12);
+  assert.ok(proof.outcomes.every(outcome => outcome.completed && outcome.noLaterRequests));
 });

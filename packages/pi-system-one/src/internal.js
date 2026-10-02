@@ -10,6 +10,7 @@ const DEFAULT_PREFERENCES = Object.freeze({
   version: 1,
   agentAccess: false,
   defaultMode: "selective",
+  defaultClassifier: null,
 });
 
 export function isUsageMode(value) {
@@ -37,6 +38,7 @@ export async function loadSystemOnePreferences(env = process.env) {
       version: 1,
       agentAccess: typeof value.agentAccess === "boolean" ? value.agentAccess : false,
       defaultMode: isUsageMode(value.defaultMode) ? value.defaultMode : "selective",
+      defaultClassifier: isClassifierSelection(value.defaultClassifier) ? Object.freeze({ ...value.defaultClassifier }) : null,
     });
   } catch {
     return DEFAULT_PREFERENCES;
@@ -49,7 +51,8 @@ export async function saveSystemOnePreferences(value, env = process.env) {
     value.version !== 1 ||
     typeof value.agentAccess !== "boolean" ||
     !isUsageMode(value.defaultMode) ||
-    Object.keys(value).some((key) => !["version", "agentAccess", "defaultMode"].includes(key))
+    (value.defaultClassifier != null && !isClassifierSelection(value.defaultClassifier)) ||
+    Object.keys(value).some((key) => !["version", "agentAccess", "defaultMode", "defaultClassifier"].includes(key))
   ) {
     throw new TypeError("System One preferences must contain version 1, boolean agentAccess, and a supported defaultMode.");
   }
@@ -97,4 +100,9 @@ function isPlainObject(value) {
 
 function isErrno(error) {
   return typeof error === "object" && error !== null && "code" in error;
+}
+
+export function isClassifierSelection(value) {
+  return isPlainObject(value) && Object.keys(value).length === 2 &&
+    [value.provider, value.id].every((item) => typeof item === "string" && item.length > 0 && item.trim() === item);
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,7 @@ const [consumerArgument, sourceArgument] = process.argv.slice(2);
 if (!consumerArgument || !sourceArgument) throw new Error("Usage: verify-pi-consumer.mjs CONSUMER SOURCE_ROOT");
 const consumer = await realpath(consumerArgument);
 const sourceRoot = await realpath(sourceArgument);
-const sharedEntry = await realpath(join(consumer, "node_modules/@cartwmic/system-one-connections/dist/index.js"));
+await assert.rejects(access(join(consumer, "node_modules/@cartwmic/system-one-connections")), { code: "ENOENT" });
 const extensionEntry = await realpath(join(consumer, "node_modules/@cartwmic/pi-system-one/src/index.js"));
 
 function isWithin(path, directory) {
@@ -18,9 +18,7 @@ function isWithin(path, directory) {
   return rel === "" || (!rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && rel !== ".." && !rel.startsWith(".."));
 }
 
-assert.ok(isWithin(sharedEntry, consumer), `shared dependency resolved outside consumer: ${sharedEntry}`);
 assert.ok(isWithin(extensionEntry, consumer), `Pi extension resolved outside consumer: ${extensionEntry}`);
-assert.equal(isWithin(sharedEntry, sourceRoot), false, "Pi shared dependency must not resolve from the source tree");
 assert.equal(isWithin(extensionEntry, sourceRoot), false, "Pi extension must not resolve from the source tree");
 
 const piCommand = process.platform === "win32" ? "where" : "which";
@@ -37,6 +35,12 @@ async function startDecisionServer() {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    assert.equal(req.headers.authorization, "Bearer packed-native-key");
+    assert.equal(req.url, "/api/v1/systemone");
+    assert.equal(req.method, "POST");
+    assert.equal(body.model, "native-classifier");
+    assert.deepEqual(Object.keys(body).sort(), ["model", "questions", "state"]);
+    assert.equal(body.questions.release.type, "choice");
     requests.push({ path: req.url, authorization: req.headers.authorization, body });
     const answers = {};
     for (const [name, question] of Object.entries(body.questions)) {
@@ -170,11 +174,12 @@ const agentDir = join(root, "pi-agent");
 const project = join(root, "project");
 const decisionServer = await startDecisionServer();
 const piProvider = await startScriptedPiProvider();
+const nativeExtension = join(root, "native-provider.mjs");
 
 async function writeOwnerPreferences(agentAccess) {
   const directory = join(agentDir, "system-one");
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, "preferences.json"), `${JSON.stringify({ version: 1, agentAccess, defaultMode: "proactive" }, null, 2)}\n`);
+  await writeFile(join(directory, "preferences.json"), `${JSON.stringify({ version: 1, agentAccess, defaultMode: "proactive", defaultClassifier: { provider: "packed-native", id: "native-classifier" } }, null, 2)}\n`);
 }
 
 async function writeProjectConflict(agentAccess) {
@@ -194,6 +199,7 @@ async function runTurn() {
     "--no-context-files",
     "--provider", "scripted",
     "--model", "scripted-model",
+    "--extension", nativeExtension,
     "--extension", extensionEntry,
     "--approve",
     "Use System One to judge the supplied release evidence.",
@@ -208,6 +214,7 @@ async function runTurn() {
       PI_OFFLINE: "1",
       PI_TELEMETRY: "0",
       SCRIPTED_PI_API_KEY: "packed-pi-synthetic-provider-key",
+      PACKED_NATIVE_KEY: "packed-native-key",
     },
   });
 }
@@ -234,16 +241,8 @@ try {
       },
     },
   }, null, 2)}\n`);
-  const catalogDirectory = join(xdg, "system-one");
-  await mkdir(catalogDirectory, { recursive: true });
-  await writeFile(join(catalogDirectory, "connections.json"), `${JSON.stringify({
-    version: 1,
-    default: "owner",
-    connections: {
-      owner: { baseURL: `${decisionServer.origin}/owner/v1`, model: "owner-model" },
-      project: { baseURL: `${decisionServer.origin}/project/v1`, model: "project-model" },
-    },
-  }, null, 2)}\n`);
+  await writeFile(nativeExtension, `import { classify } from ${JSON.stringify(piModuleUrl("node_modules/@earendil-works/pi-ai/dist/api/typesafe-system-one.js"))}; const originalFetch = globalThis.fetch; globalThis.fetch = (input, options) => { const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url); if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error("Scripted proof refuses non-loopback transport"); return originalFetch(input, options); }; export default function(pi) { pi.registerProvider("packed-native", { baseUrl: ${JSON.stringify(`${decisionServer.origin}/api/v1`)}, api: "typesafe-system-one", apiKey: "$PACKED_NATIVE_KEY", classifiers: { "typesafe-system-one": { classify } }, models: [{ type: "classifier", api: "typesafe-system-one", id: "native-classifier", name: "Packed native", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] }); }`);
+  await assert.rejects(access(join(xdg, "system-one/connections.json")), { code: "ENOENT" });
 
   await writeOwnerPreferences(true);
   await writeProjectConflict(false);
@@ -259,8 +258,8 @@ try {
     "user-global opt-in should offer the tool despite the conflicting project-local off setting");
   assert.match(JSON.stringify(firstRequest.body.messages), /Consider more eligible bounded intermediate judgments/);
   assert.equal(decisionServer.requests.length, 1);
-  assert.equal(decisionServer.requests[0].path, "/owner/v1/systemone", "project settings must not redirect the packaged extension");
-  assert.equal(decisionServer.requests[0].body.model, "owner-model");
+  assert.equal(decisionServer.requests[0].path, "/api/v1/systemone", "Pi must use native provider config, not a CLI catalog");
+  assert.equal(decisionServer.requests[0].body.model, "native-classifier");
   assert.deepEqual(decisionServer.requests[0].body.state, {
     evidence: "The supplied release note says a required check is failing.",
   });
@@ -277,7 +276,7 @@ try {
   assert.equal(decisionServer.requests.length, 1, "disabled agent calls must not reach either configured endpoint");
   assert.equal(decisionServer.requests.some((entry) => entry.path.startsWith("/project/")), false);
 
-  console.log(`PASS packed Pi consumer: real ${piExecutable} loader and tool call; shared dependency resolved under ${consumer}`);
+  console.log(`PASS packed Pi consumer: real ${piExecutable} loader and tool call; no shared-package dependency or CLI catalog under ${consumer}`);
 } finally {
   await Promise.all([decisionServer.close(), piProvider.close()]);
   await rm(root, { recursive: true, force: true });

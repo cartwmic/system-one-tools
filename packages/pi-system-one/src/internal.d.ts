@@ -1,29 +1,33 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type UsageMode = "explicit" | "selective" | "proactive" | "custom";
+
+export interface ClassifierSelection { readonly provider: string; readonly id: string; }
 
 export interface SystemOnePreferences {
   readonly version: 1;
   readonly agentAccess: boolean;
   readonly defaultMode: UsageMode;
+  readonly defaultClassifier?: ClassifierSelection | null;
 }
 
+export type NativeQuestion =
+  | { readonly type: "choice"; readonly instructions: string; readonly criteria: Readonly<Record<string, string>> }
+  | { readonly type: "bool"; readonly instructions: string; readonly criteria: { readonly true: string; readonly false: string } }
+  | { readonly type: "score"; readonly instructions: string; readonly criteria: readonly string[] };
+
 export interface SystemOneRequest {
-  readonly state: unknown;
-  readonly questions: Readonly<Record<string, unknown>>;
+  readonly state: Record<string, unknown>;
+  readonly questions: Readonly<Record<string, NativeQuestion>>;
 }
 
 export interface ManualEvaluationOptions {
-  /** Optional owner-selected connection for this call only. */
-  readonly connectionId?: string;
-  /** Optional owner-selected model for this call only. */
-  readonly model?: string;
+  readonly classifier?: ClassifierSelection;
   readonly signal?: AbortSignal;
 }
 
 export interface ManualEvaluation {
-  readonly connectionId: string;
-  readonly model: string;
+  readonly classifier: ClassifierSelection;
   readonly result: unknown;
 }
 
@@ -34,22 +38,23 @@ export interface SystemOneStatus {
   readonly mode: UsageMode;
   readonly defaultMode: UsageMode;
   readonly sessionMode: UsageMode | null;
-  readonly activeConnectionId: string | null;
-  readonly sessionConnectionId: string | null;
-  readonly connectionAvailable: boolean;
+  readonly classifier: ClassifierSelection | null;
+  readonly defaultClassifier: ClassifierSelection | null;
+  readonly sessionClassifier: ClassifierSelection | null;
+  readonly classifierAvailable: boolean;
 }
 
 /** In-process API for an owner-facing extension such as the single pi-ui /so family. */
 export interface PiSystemOneApi {
-  getStatus(): Promise<SystemOneStatus>;
+  getStatus(ctx: ExtensionContext): Promise<SystemOneStatus>;
   setSessionAccess(enabled: boolean): Promise<void>;
-  /** Omit/null to return to the catalog default; otherwise an existing catalog ID is required. */
-  setSessionUse(connectionId?: string | null): Promise<void>;
+  /** Pass null to return to the persistent classifier default; otherwise a native provider/id is required. */
+  setSessionUse(classifier: ClassifierSelection | null, ctx: ExtensionContext): Promise<void>;
   setSessionMode(mode: UsageMode): Promise<void>;
   /** Clear this session's overrides and persist the reset for reload reconstruction. */
   restoreDefaults(): Promise<void>;
   /** Direct owner invocation; does not check the agent-access gate or change session selection. */
-  evaluateManual(request: SystemOneRequest, options?: ManualEvaluationOptions): Promise<ManualEvaluation>;
+  evaluateManual(request: SystemOneRequest, options: ManualEvaluationOptions | undefined, ctx: ExtensionContext): Promise<ManualEvaluation>;
 }
 
 export declare const SYSTEM_ONE_API_CHANNEL: "cartwmic:pi-system-one:api";
@@ -63,3 +68,5 @@ export declare function getCustomGuidancePath(env?: Readonly<Record<string, stri
 export declare function loadCustomGuidance(env?: Readonly<Record<string, string | undefined>>): Promise<string | undefined>;
 export declare function saveCustomGuidance(text: string, env?: Readonly<Record<string, string | undefined>>): Promise<void>;
 export declare function getSystemOneApi(pi: Pick<ExtensionAPI, "events">): PiSystemOneApi;
+
+export declare function isClassifierSelection(value: unknown): value is ClassifierSelection;

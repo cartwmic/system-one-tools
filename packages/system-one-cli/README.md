@@ -14,7 +14,7 @@ cat request.json | system-one --connection local --model temporary-model
 
 Without `--file`, the command reads one complete JSON value from stdin. The selected connection comes from `--connection ID`, or from the catalog's `default`. `--model MODEL` and `--connection ID` are owner-controlled overrides for this call only; neither edits the saved catalog. `--timeout-ms MS` sets a positive total evaluation timeout. Runtime credentials are read from the configured environment variable named by the selected connection's `apiKeyEnv`.
 
-The catalog path is shared with other System One callers: `~/.config/system-one/connections.json`, or `$XDG_CONFIG_HOME/system-one/connections.json` when `XDG_CONFIG_HOME` is set. See [`@cartwmic/system-one-connections`](../system-one-connections/README.md) for the catalog schema and backend URL examples. A missing default, invalid selection, or missing required credential fails without trying another connection.
+The CLI/SDK catalog path (not used by the Pi extension) is: `~/.config/system-one/connections.json`, or `$XDG_CONFIG_HOME/system-one/connections.json` when `XDG_CONFIG_HOME` is set. See [`@cartwmic/system-one-connections`](../system-one-connections/README.md) for the catalog schema and backend URL examples. A missing default, invalid selection, or missing required credential fails without trying another connection.
 
 ## JSON contract
 
